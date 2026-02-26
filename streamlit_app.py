@@ -1,0 +1,66 @@
+import json
+import streamlit as st
+from streamlit.components.v1 import html as components_html
+from droneflight.kmz import parse_kmz
+
+st.set_page_config(page_title="DroneFlight Planner")
+st.title("DroneFlight Planner — Streamlit")
+
+uploaded = st.file_uploader("Upload KMZ file", type=["kmz"]) 
+
+if uploaded is not None:
+    try:
+        raw = uploaded.read()
+        geojson = parse_kmz(raw)
+        st.success("KMZ parsed successfully")
+        st.write(geojson)
+
+        # flatten coordinates to [lon, lat, lon, lat, ...]
+        coords_flat = [c for pair in geojson["coordinates"] for c in pair]
+        coords_json = json.dumps(coords_flat)
+
+        # Minimal Cesium HTML using the same logic as the Flask app
+        html = f"""
+        <!DOCTYPE html>
+        <html lang=\"en\"> 
+        <head>
+            <meta charset=\"utf-8\" />
+            <script src=\"https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Cesium.js\"></script>
+            <link href=\"https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Widgets/widgets.css\" rel=\"stylesheet\" />
+            <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}</style>
+        </head>
+        <body>
+        <div id=\"cesiumContainer\"></div>
+        <script>
+            const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
+            const coords = {coords_json};
+            const path = viewer.entities.add({{
+                polyline: {{ positions: Cesium.Cartesian3.fromDegreesArray(coords), width: 3, material: Cesium.Color.RED }}
+            }});
+            viewer.zoomTo(path);
+
+            // animate point
+            const property = new Cesium.SampledPositionProperty();
+            for (let i = 0; i < coords.length; i += 2) {{
+                const lon = coords[i];
+                const lat = coords[i+1];
+                const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
+                property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+            }}
+            viewer.entities.add({position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}});
+            viewer.clock.startTime = Cesium.JulianDate.now();
+            viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coords.length/2, new Cesium.JulianDate());
+            viewer.clock.currentTime = viewer.clock.startTime;
+            viewer.clock.multiplier = 1;
+            viewer.clock.shouldAnimate = true;
+        </script>
+        </body>
+        </html>
+        """
+
+        components_html(html, height=700, scrolling=True)
+
+    except Exception as e:
+        st.error(f"Failed to parse KMZ: {e}")
+else:
+    st.info("Upload a KMZ file to preview the route in 3D.")
