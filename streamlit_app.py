@@ -47,7 +47,7 @@ if uploaded is not None:
                 const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
                 property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
             }}
-            viewer.entities.add({position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}});
+            viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
             viewer.clock.startTime = Cesium.JulianDate.now();
             viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coords.length/2, new Cesium.JulianDate());
             viewer.clock.currentTime = viewer.clock.startTime;

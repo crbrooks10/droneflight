@@ -21,6 +21,8 @@ the flight path and terrain.
 	API or by modifying the uploaded route; the client side code can be extended
 	to allow dragging, inserting or deleting points and then exporting the
 	revised path as KMZ/GeoJSON.
+6. **Streamlit frontend** – optional lightweight UI that runs entirely in
+	Streamlit, useful for desktop or spill‑proof demos.
 
 ## Quick start
 
@@ -30,12 +32,15 @@ cd droneflight
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# Flask web service:
 export FLASK_APP=app.py
 flask run
-
 # open http://localhost:5000 in your browser
-```
 
+# Streamlit frontend (optional):
+# streamlit run streamlit_app.py
+```
 Edit `config.example.env` and rename it to `.env` to configure API keys and
 other settings.
 
