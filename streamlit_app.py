@@ -3,37 +3,18 @@ import streamlit as st
 from streamlit.components.v1 import html as components_html
 from droneflight.kmz import parse_kmz
 
-st.set_page_config(page_title="DroneFlight Planner")
-st.title("DroneFlight Planner — Streamlit")
 
-uploaded = st.file_uploader("Upload KMZ file", type=["kmz"]) 
+def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
+    """Return a minimal Cesium HTML page that will visualize a KMZ payload.
 
-if uploaded is not None:
-    try:
-        raw = uploaded.read()
-        geojson = parse_kmz(raw)
-        st.success("KMZ parsed successfully")
-        st.write(geojson)
-
-        # offer a downloadable 3D model (OBJ format)
-        try:
-            from droneflight.kmz import kmz_to_obj
-
-            thickness = st.number_input("Ribbon thickness (m)", min_value=0.0, value=0.0, step=0.1)
-            obj_text = kmz_to_obj(raw, thickness=thickness)
-            st.download_button("Download 3D model (OBJ)", data=obj_text,
-                                file_name="flight_path.obj", mime="text/plain")
-        except Exception:
-            # if conversion fails we silently ignore
-            pass
-
-        # embed raw KMZ bytes into the HTML so the client (browser) can parse
-        import base64
-        kmz_b64 = base64.b64encode(raw).decode('ascii')
-
-        # Minimal Cesium HTML using the same logic as the Flask app — the
-        # browser will decode the KMZ and parse KMLs client-side using JSZip.
-        html = f"""
+    ``kmz_b64`` should be a base64-encoded string of the raw KMZ bytes and
+    ``thickness`` is injected into the JS to control corridor width / sample
+    animation behaviour. The body of this function is a verbatim copy of the
+    large f-string previously embedded inline; extracting it makes it
+    easier to test and avoids accidental f-string brace bugs (see
+    https://github.com/crbrooks10/droneflight/pull/???).
+    """
+    return f"""
         <!DOCTYPE html>
         <html lang=\"en\"> 
         <head>
@@ -92,7 +73,7 @@ if uploaded is not None:
                     }}
                     let firstEntity = null;
                     groups.forEach((coordsArr) => {{
-                        const e = viewer.entities.add({{
+                        const e = viewer.entities.add({{ // braces doubled to escape f-string
                             corridor: {{ positions: Cesium.Cartesian3.fromDegreesArray(coordsArr), width: thickness, material: Cesium.Color.RED.withAlpha(0.8), height:0, extrudedHeight:5.0 }}
                         }});
                         if (!firstEntity) firstEntity = e;
@@ -107,7 +88,8 @@ if uploaded is not None:
                             const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
                             property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
                         }}
-                        viewer.entities.add({ position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }} });
+                        // outer braces doubled to avoid Python interpreting ``position``
+                        viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
                         viewer.clock.startTime = Cesium.JulianDate.now();
                         viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, groups[0].length/2, new Cesium.JulianDate());
                         viewer.clock.currentTime = viewer.clock.startTime; viewer.clock.multiplier = 1; viewer.clock.shouldAnimate = true;
@@ -169,6 +151,37 @@ if uploaded is not None:
         </body>
         </html>
         """
+
+st.set_page_config(page_title="DroneFlight Planner")
+st.title("DroneFlight Planner — Streamlit")
+
+uploaded = st.file_uploader("Upload KMZ file", type=["kmz"]) 
+
+if uploaded is not None:
+    try:
+        raw = uploaded.read()
+        geojson = parse_kmz(raw)
+        st.success("KMZ parsed successfully")
+        st.write(geojson)
+
+        # offer a downloadable 3D model (OBJ format)
+        try:
+            from droneflight.kmz import kmz_to_obj
+
+            thickness = st.number_input("Ribbon thickness (m)", min_value=0.0, value=0.0, step=0.1)
+            obj_text = kmz_to_obj(raw, thickness=thickness)
+            st.download_button("Download 3D model (OBJ)", data=obj_text,
+                                file_name="flight_path.obj", mime="text/plain")
+        except Exception:
+            # if conversion fails we silently ignore
+            pass
+
+        # embed raw KMZ bytes into the HTML so the client (browser) can parse
+        import base64
+        kmz_b64 = base64.b64encode(raw).decode('ascii')
+
+        # Minimal Cesium HTML; use helper to avoid f-string brace issues
+        html = _build_cesium_html(kmz_b64, thickness)
 
         components_html(html, height=700, scrolling=True)
 

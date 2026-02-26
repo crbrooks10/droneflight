@@ -55,3 +55,37 @@ def test_kmz_to_obj_with_thickness():
     assert "f 1 3 4 2" in obj or "f 1 3 4 2" in obj
     # no polyline line element when thickness used
     assert "l " not in obj
+
+
+def test_streamlit_html_builder():
+    # importing the module should succeed and building HTML must not raise
+    import base64
+    # streamlit isn't installed in the test environment so insert a simple
+    # fake module before importing the app. only the helper function is used,
+    # so most of the API can be a no-op.
+    import sys, types
+    streamlit_mock = types.SimpleNamespace(
+        set_page_config=lambda *args, **kwargs: None,
+        title=lambda *args, **kwargs: None,
+        file_uploader=lambda *args, **kwargs: None,
+        number_input=lambda *args, **kwargs: 0.0,
+        download_button=lambda *args, **kwargs: None,
+        success=lambda *args, **kwargs: None,
+        write=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        info=lambda *args, **kwargs: None,
+    )
+    comp_v1 = types.SimpleNamespace(html=lambda *args, **kwargs: None)
+    streamlit_components = types.SimpleNamespace(v1=comp_v1)
+    sys.modules['streamlit'] = streamlit_mock
+    sys.modules['streamlit.components'] = streamlit_components
+    sys.modules['streamlit.components.v1'] = comp_v1
+    import streamlit_app
+
+    kmz_b64 = base64.b64encode(KMZ_SAMPLE).decode('ascii')
+    html = streamlit_app._build_cesium_html(kmz_b64, thickness=0.5)
+    # core pieces are present and braces were escaped correctly during f-string
+    assert "kmzBase64" in html
+    assert "viewer.entities.add({position" in html
+    # the templating escape should have been resolved, so no literal '{{position'
+    assert "{{position" not in html
