@@ -74,59 +74,90 @@
         const fileInput = document.getElementById('kmzInput');
         if (!fileInput.files.length) return;
         const file = fileInput.files[0];
-        const form = new FormData();
-        form.append('file', file);
-        fetch('/upload-kmz', { method: 'POST', body: form })
-            .then(r => r.json())
-            .then(data => {
-                if (data.geojson) {
-                    const width = parseFloat(document.getElementById('widthInput').value) || 0;
-                    // support FeatureCollection or single LineString
-                    let groups = [];
-                    if (data.geojson.type === 'FeatureCollection') {
-                        groups = data.geojson.features.map(f => f.geometry.coordinates.flat());
-                    } else if (data.geojson.type === 'LineString') {
-                        groups = [data.geojson.coordinates.flat()];
-                    }
+        const width = parseFloat(document.getElementById('widthInput').value) || 0;
 
-                    let first = null;
-                    groups.forEach((coords) => {
-                        const e = viewer.entities.add({
-                            corridor: {
-                                positions: Cesium.Cartesian3.fromDegreesArray(coords),
-                                width: width,
-                                material: Cesium.Color.RED.withAlpha(0.8),
-                                height: 0,
-                                extrudedHeight: 5.0
-                            }
-                        });
-                        if (!first) first = {coords, entity: e};
-                    });
-                    if (first) viewer.zoomTo(first.entity);
-
-                    // animate along first geometry if present
-                    if (first) {
-                        const coords = first.coords;
-                        const property = new Cesium.SampledPositionProperty();
-                        const total = coords.length / 2;
-                        for (let i = 0; i < coords.length; i += 2) {
-                            const lon = coords[i];
-                            const lat = coords[i+1];
-                            const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                            property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
-                        }
-                        viewer.entities.add({ position: property, point: { pixelSize: 10, color: Cesium.Color.BLUE } });
-                        viewer.clock.startTime = Cesium.JulianDate.now();
-                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, total, new Cesium.JulianDate());
-                        viewer.clock.currentTime = viewer.clock.startTime;
-                        viewer.clock.multiplier = 1;
-                        viewer.clock.shouldAnimate = true;
-                    }
-                } else {
-                    alert('Upload failed');
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+            try {
+                const arrayBuffer = e.target.result;
+                const zip = await JSZip.loadAsync(arrayBuffer);
+                const kmlFiles = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith('.kml'));
+                if (!kmlFiles.length) {
+                    alert('No KML files found inside KMZ');
+                    return;
                 }
-            });
+
+                const groups = [];
+                for (const name of kmlFiles) {
+                    const text = await zip.file(name).async('string');
+                    const re = /<coordinates>([^<]+)<\/coordinates>/g;
+                    let m;
+                    while ((m = re.exec(text)) !== null) {
+                        const coordsText = m[1].trim();
+                        const parts = coordsText.split(/\s+/);
+                        const flat = [];
+                        for (const p of parts) {
+                            const comps = p.split(',');
+                            if (comps.length >= 2) {
+                                flat.push(parseFloat(comps[0]));
+                                flat.push(parseFloat(comps[1]));
+                            }
+                        }
+                        if (flat.length >= 4) groups.push(flat);
+                    }
+                }
+
+                if (!groups.length) {
+                    alert('No coordinates found in KML files');
+                    return;
+                }
+
+                let firstEntity = null;
+                groups.forEach((coordsArr) => {
+                    const e = viewer.entities.add({
+                        corridor: {
+                            positions: Cesium.Cartesian3.fromDegreesArray(coordsArr),
+                            width: width,
+                            material: Cesium.Color.RED.withAlpha(0.8),
+                            height: 0,
+                            extrudedHeight: 5.0
+                        }
+                    });
+                    if (!firstEntity) firstEntity = e;
+                });
+                if (firstEntity) viewer.zoomTo(firstEntity);
+
+                if (firstEntity) {
+                    const coords = groups[0];
+                    const property = new Cesium.SampledPositionProperty();
+                    for (let i = 0; i < coords.length; i += 2) {
+                        const lon = coords[i];
+                        const lat = coords[i+1];
+                        const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
+                        property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+                    }
+                    viewer.entities.add({ position: property, point: { pixelSize: 10, color: Cesium.Color.BLUE } });
+                    viewer.clock.startTime = Cesium.JulianDate.now();
+                    viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, groups[0].length/2, new Cesium.JulianDate());
+                    viewer.clock.currentTime = viewer.clock.startTime;
+                    viewer.clock.multiplier = 1;
+                    viewer.clock.shouldAnimate = true;
+                }
+            } catch (err) {
+                alert('Failed to parse KMZ client-side: ' + err);
+            }
+        };
+        reader.readAsArrayBuffer(file);
     });
+
+    // load JSZip from CDN
+    (function loadJSZip(){
+        if (window.JSZip) return;
+        const s = document.createElement('script');
+        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js';
+        s.onload = ()=>console.log('JSZip loaded');
+        document.head.appendChild(s);
+    })();
 </script>
 </body>
 </html>
