@@ -110,6 +110,18 @@ def main():
     kmz_data = editor.export_kmz()
     print(f"     Size: {len(kmz_data)} bytes")
 
+    # new 3D export options
+    print("   • OBJ (from editor): available via .export_obj()")
+    obj_text = editor.export_obj(default_alt=60)
+    print(f"     OBJ lines: {len(obj_text.splitlines())}")
+
+    # converting raw KMZ bytes straight to OBJ
+    print("   • OBJ (from KMZ): using kmz_to_obj() helper")
+    raw_kmz_example = kmz_data  # just reuse the data we generated earlier
+    from droneflight.kmz import kmz_to_obj
+    obj_from_kmz = kmz_to_obj(raw_kmz_example)
+    print(f"     OBJ size: {len(obj_from_kmz)} characters")
+
     print("\n" + "=" * 60)
     print("Example Complete!")
     print("=" * 60)

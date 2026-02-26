@@ -13,6 +13,11 @@ the flight path and terrain.
 1. **KMZ upload & parsing** – drag’n’drop or file selector for Google Earth
 	KMZ files; routes are extracted and converted to GeoJSON for display.
 2. **3D visualization** – interactive globe/terrain powered by CesiumJS.
+
+   * New: uploaded KMZ routes can now be converted into a simple 3D model
+     (Wavefront OBJ) for offline use or import into modeling tools. The
+     backend exposes a `kmz_to_obj` helper and the path editor can also
+     export any route as OBJ.
 3. **Weather & radar integration** – fetch current and forecast conditions
 	from an external API (OpenWeather, NOAA, etc.) and overlay them on the map.
 4. **Flight‑time recommendations** – simple logic to suggest a departure window

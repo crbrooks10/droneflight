@@ -115,6 +115,29 @@ class FlightPathEditor:
             csv_lines.append(f"{lon},{lat},{alt},0")
         return "\n".join(csv_lines)
 
+    def export_obj(self, default_alt: float = 0.0) -> str:
+        """Export the current flight path as a simple OBJ 3D model.
+
+        This produces a Wavefront OBJ text string with one object named
+        ``flight_path``. Each waypoint becomes a <code>v</code> vertex (lon,
+        lat, altitude) and the path is expressed as a single polyline (<code>l</code>).
+        The coordinates are treated as x (longitude), y (latitude), and z
+        (altitude) in the OBJ space. Missing altitudes are replaced with
+        ``default_alt``.
+        """
+        lines = ["# exported by FlightPathEditor.export_obj", "o flight_path"]
+        for wp in self.waypoints:
+            if len(wp) == 3:
+                lon, lat, alt = wp
+            else:
+                lon, lat = wp
+                alt = default_alt
+            lines.append(f"v {lon} {lat} {alt}")
+        if len(self.waypoints) > 1:
+            idxs = " ".join(str(i + 1) for i in range(len(self.waypoints)))
+            lines.append(f"l {idxs}")
+        return "\n".join(lines)
+
     def _sync_geojson(self):
         """Sync waypoints back to GeoJSON."""
         self.geojson["coordinates"] = list(self.waypoints)

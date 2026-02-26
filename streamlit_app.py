@@ -15,6 +15,17 @@ if uploaded is not None:
         st.success("KMZ parsed successfully")
         st.write(geojson)
 
+        # offer a downloadable 3D model (OBJ format)
+        try:
+            from droneflight.kmz import kmz_to_obj
+
+            obj_text = kmz_to_obj(raw)
+            st.download_button("Download 3D model (OBJ)", data=obj_text,
+                                file_name="flight_path.obj", mime="text/plain")
+        except Exception as _:
+            # if conversion fails we silently ignore
+            pass
+
         # flatten coordinates to [lon, lat, lon, lat, ...]
         coords_flat = [c for pair in geojson["coordinates"] for c in pair]
         coords_json = json.dumps(coords_flat)
