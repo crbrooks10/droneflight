@@ -115,27 +115,44 @@ class FlightPathEditor:
             csv_lines.append(f"{lon},{lat},{alt},0")
         return "\n".join(csv_lines)
 
-    def export_obj(self, default_alt: float = 0.0) -> str:
-        """Export the current flight path as a simple OBJ 3D model.
+    def export_obj(self, default_alt: float = 0.0, thickness: float = 0.0) -> str:
+        """Export the current flight path as a simple OBJ model.
 
-        This produces a Wavefront OBJ text string with one object named
-        ``flight_path``. Each waypoint becomes a <code>v</code> vertex (lon,
-        lat, altitude) and the path is expressed as a single polyline (<code>l</code>).
-        The coordinates are treated as x (longitude), y (latitude), and z
-        (altitude) in the OBJ space. Missing altitudes are replaced with
-        ``default_alt``.
+        The output mirrors :func:`kmz.kmz_to_obj`. When ``thickness`` is zero a
+        polyline is returned. A positive thickness builds a narrow ribbon mesh
+        made from quad faces, which most mesh viewers render as a visible
+        surface. ``default_alt`` is applied to waypoints that lack an altitude.
         """
         lines = ["# exported by FlightPathEditor.export_obj", "o flight_path"]
-        for wp in self.waypoints:
-            if len(wp) == 3:
-                lon, lat, alt = wp
-            else:
-                lon, lat = wp
-                alt = default_alt
-            lines.append(f"v {lon} {lat} {alt}")
-        if len(self.waypoints) > 1:
-            idxs = " ".join(str(i + 1) for i in range(len(self.waypoints)))
-            lines.append(f"l {idxs}")
+
+        coords = self.waypoints
+        if thickness <= 0 or len(coords) < 2:
+            for wp in coords:
+                if len(wp) == 3:
+                    lon, lat, alt = wp
+                else:
+                    lon, lat = wp
+                    alt = default_alt
+                lines.append(f"v {lon} {lat} {alt}")
+            if len(coords) > 1:
+                idxs = " ".join(str(i + 1) for i in range(len(coords)))
+                lines.append(f"l {idxs}")
+        else:
+            # produce ribbon mesh
+            for wp in coords:
+                if len(wp) == 3:
+                    lon, lat, alt = wp
+                else:
+                    lon, lat = wp
+                    alt = default_alt
+                lines.append(f"v {lon} {lat} {alt}")
+                lines.append(f"v {lon} {lat} {alt + thickness}")
+            for i in range(len(coords) - 1):
+                v1 = 2 * i + 1
+                v2 = v1 + 2
+                v3 = v2 + 1
+                v4 = v1 + 1
+                lines.append(f"f {v1} {v2} {v3} {v4}")
         return "\n".join(lines)
 
     def _sync_geojson(self):

@@ -19,10 +19,11 @@ if uploaded is not None:
         try:
             from droneflight.kmz import kmz_to_obj
 
-            obj_text = kmz_to_obj(raw)
+            thickness = st.number_input("Ribbon thickness (m)", min_value=0.0, value=0.0, step=0.1)
+            obj_text = kmz_to_obj(raw, thickness=thickness)
             st.download_button("Download 3D model (OBJ)", data=obj_text,
                                 file_name="flight_path.obj", mime="text/plain")
-        except Exception as _:
+        except Exception:
             # if conversion fails we silently ignore
             pass
 

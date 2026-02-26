@@ -17,7 +17,10 @@ the flight path and terrain.
    * New: uploaded KMZ routes can now be converted into a simple 3D model
      (Wavefront OBJ) for offline use or import into modeling tools. The
      backend exposes a `kmz_to_obj` helper and the path editor can also
-     export any route as OBJ.
+     export any route as OBJ.  
+     By default the OBJ is a polyline; if you supply a small
+     ``thickness`` value the code will build a thin ribbon (quad faces)
+     which mesh viewers such as MeshLab will render properly.
 3. **Weather & radar integration** – fetch current and forecast conditions
 	from an external API (OpenWeather, NOAA, etc.) and overlay them on the map.
 4. **Flight‑time recommendations** – simple logic to suggest a departure window
