@@ -42,14 +42,58 @@ if uploaded is not None:
             <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}</style>
         </head>
         <body>
+        <div id=\"controls\">
+            <button id=\"startDraw\">Start new line</button>
+            <button id=\"finishDraw\">Finish line</button>
+            <button id=\"clearDrawings\">Clear drawings</button>
+        </div>
         <div id=\"cesiumContainer\"></div>
         <script>
             const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
             const coords = {coords_json};
             const path = viewer.entities.add({{
-                polyline: {{ positions: Cesium.Cartesian3.fromDegreesArray(coords), width: 3, material: Cesium.Color.RED }}
+                corridor: {{
+                    positions: Cesium.Cartesian3.fromDegreesArray(coords),
+                    width: {thickness},
+                    material: Cesium.Color.RED.withAlpha(0.8),
+                    height: 0,
+                    extrudedHeight: 5.0
+                }}
             }});
             viewer.zoomTo(path);
+
+            // drawing support
+            let drawing = false;
+            let currentPositions = [];
+            let currentEntity = null;
+            const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+            handler.setInputAction(function(click) {{
+                if (!drawing) return;
+                const cart = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
+                if (cart) {{
+                    currentPositions.push(cart);
+                    if (!currentEntity) {{
+                        currentEntity = viewer.entities.add({{
+                            polyline: {{
+                                positions: new Cesium.CallbackProperty(function() {{ return currentPositions; }}, false),
+                                width: 4,
+                                material: Cesium.Color.BLUE
+                            }}
+                        }});
+                    }}
+                }}
+            }}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+            document.getElementById('startDraw').addEventListener('click', () => {{
+                drawing = true;
+                currentPositions = [];
+                if (currentEntity) {{ viewer.entities.remove(currentEntity); currentEntity = null; }}
+            }});
+            document.getElementById('finishDraw').addEventListener('click', () => {{ drawing = false; }});
+            document.getElementById('clearDrawings').addEventListener('click', () => {{
+                drawing = false;
+                currentPositions = [];
+                if (currentEntity) {{ viewer.entities.remove(currentEntity); currentEntity = null; }}
+            }});
 
             // animate point
             const property = new Cesium.SampledPositionProperty();
