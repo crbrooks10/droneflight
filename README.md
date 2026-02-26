@@ -1,4 +1,4 @@
-﻿# DroneFlight
+# DroneFlight
 
 Python‑based pre‑flight planning application for unmanned aircraft systems.
 
