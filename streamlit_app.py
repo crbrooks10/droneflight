@@ -27,9 +27,16 @@ if uploaded is not None:
             # if conversion fails we silently ignore
             pass
 
-        # flatten coordinates to [lon, lat, lon, lat, ...]
-        coords_flat = [c for pair in geojson["coordinates"] for c in pair]
-        coords_json = json.dumps(coords_flat)
+        # prepare one or more coordinate groups for the Cesium HTML
+        if isinstance(geojson, dict) and geojson.get("type") == "FeatureCollection":
+            groups = []
+            for feat in geojson.get("features", []):
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                groups.append([c for pair in coords for c in pair])
+        else:
+            coords = geojson.get("coordinates", [])
+            groups = [[c for pair in coords for c in pair]]
+        coords_groups_json = json.dumps(groups)
 
         # Minimal Cesium HTML using the same logic as the Flask app
         html = f"""
@@ -50,17 +57,21 @@ if uploaded is not None:
         <div id=\"cesiumContainer\"></div>
         <script>
             const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
-            const coords = {coords_json};
-            const path = viewer.entities.add({{
-                corridor: {{
-                    positions: Cesium.Cartesian3.fromDegreesArray(coords),
-                    width: {thickness},
-                    material: Cesium.Color.RED.withAlpha(0.8),
-                    height: 0,
-                    extrudedHeight: 5.0
-                }}
+            const groups = {coords_groups_json};
+            let firstEntity = null;
+            groups.forEach((coordsArr) => {{
+                const e = viewer.entities.add({{
+                    corridor: {{
+                        positions: Cesium.Cartesian3.fromDegreesArray(coordsArr),
+                        width: {thickness},
+                        material: Cesium.Color.RED.withAlpha(0.8),
+                        height: 0,
+                        extrudedHeight: 5.0
+                    }}
+                }});
+                if (!firstEntity) firstEntity = e;
             }});
-            viewer.zoomTo(path);
+            if (firstEntity) viewer.zoomTo(firstEntity);
 
             // drawing support
             let drawing = false;
@@ -95,20 +106,23 @@ if uploaded is not None:
                 if (currentEntity) {{ viewer.entities.remove(currentEntity); currentEntity = null; }}
             }});
 
-            // animate point
-            const property = new Cesium.SampledPositionProperty();
-            for (let i = 0; i < coords.length; i += 2) {{
-                const lon = coords[i];
-                const lat = coords[i+1];
-                const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+            // animate along first group if available
+            if (groups.length && groups[0].length >= 2) {{
+                const coordsAnim = groups[0];
+                const property = new Cesium.SampledPositionProperty();
+                for (let i = 0; i < coordsAnim.length; i += 2) {{
+                    const lon = coordsAnim[i];
+                    const lat = coordsAnim[i+1];
+                    const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
+                    property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+                }}
+                viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
+                viewer.clock.startTime = Cesium.JulianDate.now();
+                viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coordsAnim.length/2, new Cesium.JulianDate());
+                viewer.clock.currentTime = viewer.clock.startTime;
+                viewer.clock.multiplier = 1;
+                viewer.clock.shouldAnimate = true;
             }}
-            viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
-            viewer.clock.startTime = Cesium.JulianDate.now();
-            viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coords.length/2, new Cesium.JulianDate());
-            viewer.clock.currentTime = viewer.clock.startTime;
-            viewer.clock.multiplier = 1;
-            viewer.clock.shouldAnimate = true;
         </script>
         </body>
         </html>

@@ -80,51 +80,48 @@
             .then(r => r.json())
             .then(data => {
                 if (data.geojson) {
-                    const coords = data.geojson.coordinates.flat();
-                    // show a slightly thick corridor instead of thin line
                     const width = parseFloat(document.getElementById('widthInput').value) || 0;
-                    const path = viewer.entities.add({
-                        id: 'route',
-                        corridor: {
-                            positions: Cesium.Cartesian3.fromDegreesArray(coords),
-                            width: width,
-                            material: Cesium.Color.RED.withAlpha(0.8),
-                            height: 0,
-                            // extrudedHeight below the surface for visibility
-                            extrudedHeight: 5.0
-                        }
-                    });
-                    viewer.zoomTo(path);
+                    // support FeatureCollection or single LineString
+                    let groups = [];
+                    if (data.geojson.type === 'FeatureCollection') {
+                        groups = data.geojson.features.map(f => f.geometry.coordinates.flat());
+                    } else if (data.geojson.type === 'LineString') {
+                        groups = [data.geojson.coordinates.flat()];
+                    }
 
-                    // animate a simple point along the route to simulate a drone
-                    const property = new Cesium.SampledPositionProperty();
-                    const total = coords.length / 2; // lon/lat pairs
-                    coords.forEach((v, i) => {
-                        if (i % 2 === 0) {
-                            const lon = v;
+                    let first = null;
+                    groups.forEach((coords) => {
+                        const e = viewer.entities.add({
+                            corridor: {
+                                positions: Cesium.Cartesian3.fromDegreesArray(coords),
+                                width: width,
+                                material: Cesium.Color.RED.withAlpha(0.8),
+                                height: 0,
+                                extrudedHeight: 5.0
+                            }
+                        });
+                        if (!first) first = {coords, entity: e};
+                    });
+                    if (first) viewer.zoomTo(first.entity);
+
+                    // animate along first geometry if present
+                    if (first) {
+                        const coords = first.coords;
+                        const property = new Cesium.SampledPositionProperty();
+                        const total = coords.length / 2;
+                        for (let i = 0; i < coords.length; i += 2) {
+                            const lon = coords[i];
                             const lat = coords[i+1];
-                            const time = Cesium.JulianDate.addSeconds(
-                                viewer.clock.startTime,
-                                i, new Cesium.JulianDate()
-                            );
+                            const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
                             property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
                         }
-                    });
-                    viewer.entities.add({
-                        position: property,
-                        point: { pixelSize: 10, color: Cesium.Color.BLUE },
-                        model: {
-                            uri: 'https://cesium.com/downloads/cesiumjs/releases/1.111/Apps/SampleData/models/CesiumBalloon/CesiumBalloon.glb',
-                            scale: 0.1
-                        }
-                    });
-
-                    // set clock range to playback
-                    viewer.clock.startTime = Cesium.JulianDate.now();
-                    viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, total, new Cesium.JulianDate());
-                    viewer.clock.currentTime = viewer.clock.startTime;
-                    viewer.clock.multiplier = 1; // 1 second per second
-                    viewer.clock.shouldAnimate = true;
+                        viewer.entities.add({ position: property, point: { pixelSize: 10, color: Cesium.Color.BLUE } });
+                        viewer.clock.startTime = Cesium.JulianDate.now();
+                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, total, new Cesium.JulianDate());
+                        viewer.clock.currentTime = viewer.clock.startTime;
+                        viewer.clock.multiplier = 1;
+                        viewer.clock.shouldAnimate = true;
+                    }
                 } else {
                     alert('Upload failed');
                 }
