@@ -1,0 +1,26 @@
+{
+  "name": "project-name",
+  "version": "1.0.0",
+  "description": "A project for displaying and editing KMZ files as 3D images.",
+  "main": "src/app.ts",
+  "scripts": {
+    "start": "ts-node src/app.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "three": "^0.140.0",
+    "kmz-parser": "^1.0.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.0.0",
+    "typescript": "^4.5.0"
+  },
+  "keywords": [
+    "KMZ",
+    "3D",
+    "rendering",
+    "editing"
+  ],
+  "author": "crbrooks10",
+  "license": "MIT"
+}
