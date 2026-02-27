@@ -8,4 +8,7 @@ def test_index_includes_coordinate_textarea():
     assert re.search(r"loadCoordsBtn" , text)
     # weather panel iframe should appear
     assert 'id="weatherPanel"' in text
-    assert 'iframe' in text and 'mscweather.com/weekly' in text
+    assert 'iframe' in text
+    # should load our local weather endpoint and local Cesium assets
+    assert '/weather' in text
+    assert '/static/cesium.js' in text or 'Cesium.js' in text

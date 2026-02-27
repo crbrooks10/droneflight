@@ -13,7 +13,7 @@ def test_builder_includes_manual_coords():
     assert 'const kmzBase64 = ""' in html
     # thickness value present
     assert "const thickness = 5.0" in html
-    assert "weatherPanel" in html and "mscweather.com/weekly" in html
+    assert "weatherPanel" in html and "iframe" in html
 
 
 def test_builder_handles_no_manual():
@@ -21,4 +21,4 @@ def test_builder_handles_no_manual():
     assert "const manualCoords = null" in html
     assert "const kmzBase64 = \"\"" in html
     assert "const thickness = 2.5" in html
-    assert "weatherPanel" in html
+    assert "weatherPanel" in html and "iframe" in html

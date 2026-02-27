@@ -30,5 +30,21 @@ def upload_kmz():
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+
+@app.route('/weather')
+def weather():
+    """Return weather page content, falling back if the remote site is
+    unreachable.  This lets the iframe always show something even when
+    external DNS/network access is blocked (as it is in some environments)."""
+    try:
+        import requests
+        resp = requests.get('https://mscweather.com/weekly', timeout=3)
+        content = resp.text
+        ctype = resp.headers.get('Content-Type', 'text/html')
+        return content, resp.status_code, {'Content-Type': ctype}
+    except Exception:
+        # network failure, provide a simple placeholder
+        return '<p>Weather data unavailable</p>', 200, {'Content-Type': 'text/html'}
+
 if __name__ == '__main__':
     app.run(debug=True)

@@ -12,19 +12,43 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
     ``manual_coords`` is non-``None`` the JS will ignore the KMZ and instead
     render the provided flat array of longitude/latitude pairs.  ``thickness``
     is injected into the JS to control corridor width / animation behaviour.
+
+    The generated HTML inlines Cesium, its CSS widgets, and JSZip from the
+    repository's ``static/`` directory.  This allows the page to function even
+    when the browser does not have internet access (important for the
+    Streamlit-hosted version).
     """
     # JSON-encode the manual coordinate list so it can be interpolated into
     # the generated script.  ``null`` in the template means "no manual data"
     coords_json = json.dumps(manual_coords) if manual_coords is not None else "null"
     # allow passing None for kmz_b64 as empty string in JS
     kmz = kmz_b64 or ""
+
+    # inline static assets if available (Cesium, CSS, JSZip)
+    try:
+        with open('static/cesium.js', 'r', encoding='utf-8') as f:
+            cesium_js = f.read()
+    except Exception:
+        cesium_js = ''
+    try:
+        with open('static/widgets.css', 'r', encoding='utf-8') as f:
+            widgets_css = f.read()
+    except Exception:
+        widgets_css = ''
+    try:
+        with open('static/jszip.min.js', 'r', encoding='utf-8') as f:
+            jszip_js = f.read()
+    except Exception:
+        jszip_js = ''
+
     return f"""
         <!DOCTYPE html>
         <html lang=\"en\"> 
         <head>
             <meta charset=\"utf-8\" />
-            <script src=\"https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Cesium.js\"></script>
-            <link href=\"https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Widgets/widgets.css\" rel=\"stylesheet\" />
+            <script>{cesium_js}</script>
+            <style>{widgets_css}</style>
+            <script>{jszip_js}</script>
             <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}
             #mainContainer {{ display:flex; height:100%; }}
             #mainContainer {{ display:flex; height:100%; }}
@@ -67,13 +91,7 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
 
             (async function() {{
                 try {{
-                    if (!window.JSZip) {{
-                        await new Promise((res, rej) => {{
-                            const s = document.createElement('script');
-                            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js';
-                            s.onload = res; s.onerror = rej; document.head.appendChild(s);
-                        }});
-                    }}
+                    // JSZip is already inlined above; no need to load remotely
                     let groups = [];
                     if (manualCoords && manualCoords.length) {{
                         groups = [manualCoords];

@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <title>DroneFlight Planner</title>
-    <script src="https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Cesium.js"></script>
-    <link href="https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <script src="/static/cesium.js"></script>
+    <link href="/static/widgets.css" rel="stylesheet">
+    <script src="/static/jszip.min.js"></script>
     <style>
         body, html { height: 100%; margin: 0; padding: 0; }
         #mainContainer { display: flex; height: 100%; }
@@ -18,7 +19,7 @@
 <body>
 <div id="mainContainer">
     <div id="weatherPanel">
-        <iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin" frameborder="0" onerror="this.parentElement.innerText='Weather unavailable';"></iframe>
+        <iframe id="weatherFrame" src="/weather" sandbox="allow-scripts allow-same-origin" frameborder="0" onerror="this.parentElement.innerText='Weather unavailable';"></iframe>
     </div>
     <div id="leftPanel">
         <div id="controls">
