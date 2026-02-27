@@ -4,16 +4,20 @@ from streamlit.components.v1 import html as components_html
 from droneflight.kmz import parse_kmz
 
 
-def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
-    """Return a minimal Cesium HTML page that will visualize a KMZ payload.
+def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: list | None = None) -> str:
+    """Return a minimal Cesium HTML page that will visualize a KMZ payload or
+    a list of manually supplied coordinates.
 
-    ``kmz_b64`` should be a base64-encoded string of the raw KMZ bytes and
-    ``thickness`` is injected into the JS to control corridor width / sample
-    animation behaviour. The body of this function is a verbatim copy of the
-    large f-string previously embedded inline; extracting it makes it
-    easier to test and avoids accidental f-string brace bugs (see
-    https://github.com/crbrooks10/droneflight/pull/???).
+    ``kmz_b64`` should be a base64-encoded string of the raw KMZ bytes; if
+    ``manual_coords`` is non-``None`` the JS will ignore the KMZ and instead
+    render the provided flat array of longitude/latitude pairs.  ``thickness``
+    is injected into the JS to control corridor width / animation behaviour.
     """
+    # JSON-encode the manual coordinate list so it can be interpolated into
+    # the generated script.  ``null`` in the template means "no manual data"
+    coords_json = json.dumps(manual_coords) if manual_coords is not None else "null"
+    # allow passing None for kmz_b64 as empty string in JS
+    kmz = kmz_b64 or ""
     return f"""
         <!DOCTYPE html>
         <html lang=\"en\"> 
@@ -32,7 +36,8 @@ def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
         <div id=\"cesiumContainer\"></div>
         <script>
             const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
-            const kmzBase64 = "{kmz_b64}";
+            const kmzBase64 = "{kmz}";
+            const manualCoords = {coords_json};
             const thickness = {thickness};
 
             function b64ToUint8Array(b64) {{
@@ -52,25 +57,29 @@ def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
                             s.onload = res; s.onerror = rej; document.head.appendChild(s);
                         }});
                     }}
-                    const data = b64ToUint8Array(kmzBase64).buffer;
-                    const zip = await JSZip.loadAsync(data);
-                    const kmlFiles = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith('.kml'));
-                    const groups = [];
-                    for (const name of kmlFiles) {{
-                        const text = await zip.file(name).async('string');
-                        const re = /<coordinates>([^<]+)<\/coordinates>/g;
-                        let m;
-                        while ((m = re.exec(text)) !== null) {{
-                            const coordsText = m[1].trim();
-                            const parts = coordsText.split(/\s+/);
-                            const flat = [];
-                            for (const p of parts) {{
-                                const comps = p.split(',');
-                                if (comps.length >= 2) {{ flat.push(parseFloat(comps[0])); flat.push(parseFloat(comps[1])); }}
+                    let groups = [];
+                    if (manualCoords && manualCoords.length) {{
+                        groups = [manualCoords];
+                    }} else {{
+                        const data = b64ToUint8Array(kmzBase64).buffer;
+                        const zip = await JSZip.loadAsync(data);
+                        const kmlFiles = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith('.kml'));
+                        for (const name of kmlFiles) {{
+                            const text = await zip.file(name).async('string');
+                            const re = /<coordinates>([^<]+)<\/coordinates>/g;
+                            let m;
+                            while ((m = re.exec(text)) !== null) {{
+                                const coordsText = m[1].trim();
+                                const parts = coordsText.split(/\s+/);
+                                const flat = [];
+                                for (const p of parts) {{
+                                    const comps = p.split(',');
+                                    if (comps.length >= 2) {{ flat.push(parseFloat(comps[0])); flat.push(parseFloat(comps[1])); }}
+                                }}
+                                if (flat.length >= 4) groups.push(flat);
                             }}
-                            if (flat.length >= 4) groups.push(flat);
                         }}
-                    }}
+                    }} // end else for manualCoords
                     let firstEntity = null;
                     groups.forEach((coordsArr) => {{
                         const e = viewer.entities.add({{ // braces doubled to escape f-string
@@ -147,38 +156,48 @@ def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
 st.set_page_config(page_title="DroneFlight Planner")
 st.title("DroneFlight Planner — Streamlit")
 
+# allow users to paste raw coordinate pairs if KMZ fails
+coords_text = st.text_area("Or paste lon,lat coordinate pairs (space/newline separated)", "")
+
 uploaded = st.file_uploader("Upload KMZ file", type=["kmz"]) 
 
-if uploaded is not None:
+if coords_text.strip():
+    # parse manual coordinates
+    parts = coords_text.strip().split()
+    flat = []
     try:
-        raw = uploaded.read()
-        geojson = parse_kmz(raw)
-        st.success("KMZ parsed successfully")
+        for p in parts:
+            lon, lat = p.split(',')
+            flat.extend([float(lon), float(lat)])
+        if len(flat) < 4:
+            raise ValueError("need at least two points")
+        geojson = {"type": "LineString", "coordinates": [[flat[i], flat[i+1]] for i in range(0, len(flat), 2)]}
+        st.success("Coordinates loaded")
         st.write(geojson)
+        manual_coords = flat
+    except Exception as e:
+        st.error(f"Failed to parse coordinates: {e}")
+        manual_coords = None
+else:
+    manual_coords = None
 
-        # offer a downloadable 3D model (OBJ format)
-        # older versions of the app allowed downloading a generated OBJ
-        # model, however the current requirements forbid exporting anything
-        # derived from the KMZ.  The backend helper :func:`kmz_to_obj` is
-        # still available for internal use and unit tests, but we deliberately
-        # do not expose it in the UI.
-        #
-        # hence, no download button is shown here.
-        pass
-
-        # embed raw KMZ bytes into the HTML so the client (browser) can parse
-        import base64
-        kmz_b64 = base64.b64encode(raw).decode('ascii')
-
+if uploaded is not None or manual_coords is not None:
+    try:
+        if uploaded is not None:
+            raw = uploaded.read()
+            geojson = parse_kmz(raw)
+            st.success("KMZ parsed successfully")
+            st.write(geojson)
+            import base64
+            kmz_b64 = base64.b64encode(raw).decode('ascii')
+        else:
+            kmz_b64 = ""
         # use a reasonable default corridor width for visualization
         thickness = 10.0
 
-        # Minimal Cesium HTML; use helper to avoid f-string brace issues
-        html = _build_cesium_html(kmz_b64, thickness)
-
+        html = _build_cesium_html(kmz_b64, thickness, manual_coords)
         components_html(html, height=700, scrolling=True)
-
     except Exception as e:
-        st.error(f"Failed to parse KMZ: {e}")
+        st.error(f"Failed to process input: {e}")
 else:
-    st.info("Upload a KMZ file to preview the route in 3D.")
+    st.info("Upload a KMZ file or paste coordinates to preview the route in 3D.")

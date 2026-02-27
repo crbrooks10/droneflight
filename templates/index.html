@@ -19,36 +19,62 @@
     <input type="number" id="widthInput" value="10" min="0" step="1" style="width:60px;" />
     <button id="startDraw">Start new line</button>
     <button id="finishDraw">Finish line</button>
-    <button id="clearDrawings">Clear drawings</button>
-</div>
+    <button id="clearDrawings">Clear drawings</button>    <br />
+    <label for="coordsText">Or paste lon,lat pairs:</label><br/>
+    <textarea id="coordsText" rows="3" cols="60" placeholder="-122.42,37.77 -122.41,37.78"></textarea><br/>
+    <button id="loadCoordsBtn">Load coordinates</button></div>
 <div id="cesiumContainer"></div>
 <script>
     const viewer = new Cesium.Viewer('cesiumContainer', {
         terrainProvider: Cesium.createWorldTerrain()
     });
 
-    // drawing state
+    // drawing/editing state
     let drawing = false;
     let currentPositions = [];
     let currentEntity = null;
+    let pointEntities = [];
+    let dragIndex = null;
 
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
     handler.setInputAction(function(click) {
-        if (!drawing) return;
-        const cartesian = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
-        if (cartesian) {
-            currentPositions.push(cartesian);
-            if (!currentEntity) {
-                currentEntity = viewer.entities.add({
-                    polyline: {
-                        positions: new Cesium.CallbackProperty(function() { return currentPositions; }, false),
-                        width: 4,
-                        material: Cesium.Color.BLUE
-                    }
-                });
+        if (drawing) {
+            const cartesian = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
+            if (cartesian) {
+                currentPositions.push(cartesian);
+                if (!currentEntity) {
+                    currentEntity = viewer.entities.add({
+                        polyline: {
+                            positions: new Cesium.CallbackProperty(function() { return currentPositions; }, false),
+                            width: 4,
+                            material: Cesium.Color.BLUE
+                        }
+                    });
+                }
+            }
+        } else {
+            // attempt to start dragging an existing point
+            const picked = viewer.scene.pick(click.position);
+            if (Cesium.defined(picked) && pointEntities.includes(picked.id)) {
+                dragIndex = pointEntities.indexOf(picked.id);
             }
         }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    handler.setInputAction(function(movement) {
+        if (dragIndex !== null) {
+            const cart = viewer.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid);
+            if (cart) {
+                currentPositions[dragIndex] = cart;
+                // update associated point entity
+                pointEntities[dragIndex].position = cart;
+            }
+        }
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+    handler.setInputAction(function() {
+        dragIndex = null;
+    }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
     document.getElementById('startDraw').addEventListener('click', () => {
         drawing = true;
@@ -70,11 +96,53 @@
         }
     });
 
+    // handling for KMZ or manual coordinates
+    let currentGroups = [];
+
+    function renderGroups() {
+        viewer.entities.removeAll();
+        currentEntity = null;
+        currentPositions = [];
+        pointEntities = [];
+        let firstEnt = null;
+        currentGroups.forEach((coordsArr) => {
+            const e = viewer.entities.add({
+                corridor: {
+                    positions: Cesium.Cartesian3.fromDegreesArray(coordsArr),
+                    width: parseFloat(document.getElementById('widthInput').value) || 0,
+                    material: Cesium.Color.RED.withAlpha(0.8),
+                    height: 0,
+                    extrudedHeight: 5.0
+                }
+            });
+            if (!firstEnt) firstEnt = e;
+        });
+        if (firstEnt) viewer.zoomTo(firstEnt);
+        if (currentGroups.length) {
+            currentPositions = Cesium.Cartesian3.fromDegreesArray(currentGroups[0]);
+            // create editable polyline
+            currentEntity = viewer.entities.add({
+                polyline: {
+                    positions: new Cesium.CallbackProperty(function() { return currentPositions; }, false),
+                    width: 4,
+                    material: Cesium.Color.BLUE
+                }
+            });
+            // add draggable points
+            currentPositions.forEach((pos) => {
+                const pt = viewer.entities.add({
+                    position: pos,
+                    point: { pixelSize: 8, color: Cesium.Color.YELLOW }
+                });
+                pointEntities.push(pt);
+            });
+        }
+    }
+
     document.getElementById('uploadBtn').addEventListener('click', async () => {
         const fileInput = document.getElementById('kmzInput');
         if (!fileInput.files.length) return;
         const file = fileInput.files[0];
-        const width = parseFloat(document.getElementById('widthInput').value) || 0;
 
         // ensure JSZip is available before proceeding
         if (typeof JSZip === 'undefined') {
@@ -123,49 +191,33 @@
                     return;
                 }
 
-                let firstEntity = null;
-                groups.forEach((coordsArr) => {
-                    const e = viewer.entities.add({
-                        corridor: {
-                            positions: Cesium.Cartesian3.fromDegreesArray(coordsArr),
-                            width: width,
-                            material: Cesium.Color.RED.withAlpha(0.8),
-                            height: 0,
-                            extrudedHeight: 5.0
-                        }
-                    });
-                    if (!firstEntity) firstEntity = e;
-                });
-                if (firstEntity) viewer.zoomTo(firstEntity);
-
-                // animate along ALL KML lines, not just the first
-                groups.forEach((coords) => {
-                    if (coords.length >= 2) {
-                        const property = new Cesium.SampledPositionProperty();
-                        for (let i = 0; i < coords.length; i += 2) {
-                            const lon = coords[i];
-                            const lat = coords[i+1];
-                            const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                            property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
-                        }
-                        viewer.entities.add({ position: property, point: { pixelSize: 10, color: Cesium.Color.BLUE } });
-                    }
-                });
-
-                // set clock to span the longest path
-                if (groups.length > 0) {
-                    const maxLen = Math.max(...groups.map(g => g.length / 2));
-                    viewer.clock.startTime = Cesium.JulianDate.now();
-                    viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, maxLen, new Cesium.JulianDate());
-                    viewer.clock.currentTime = viewer.clock.startTime;
-                    viewer.clock.multiplier = 1;
-                    viewer.clock.shouldAnimate = true;
-                }
+                currentGroups = groups;
+                renderGroups();
             } catch (err) {
                 alert('Failed to parse KMZ client-side: ' + err);
             }
         };
         reader.readAsArrayBuffer(file);
+    });
+
+    document.getElementById('loadCoordsBtn').addEventListener('click', () => {
+        const text = document.getElementById('coordsText').value.trim();
+        if (!text) return;
+        const parts = text.split(/\s+/);
+        const flat = [];
+        for (const p of parts) {
+            const comps = p.split(',');
+            if (comps.length >= 2) {
+                flat.push(parseFloat(comps[0]));
+                flat.push(parseFloat(comps[1]));
+            }
+        }
+        if (flat.length < 4) {
+            alert('need at least two coordinate pairs');
+            return;
+        }
+        currentGroups = [flat];
+        renderGroups();
     });
 
 </script>
