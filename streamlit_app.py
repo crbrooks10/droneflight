@@ -40,7 +40,7 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             <button id=\"clearDrawings\">Clear drawings</button>
         </div>
         <div id=\"cesiumContainer\"></div>
-            <div id=\"weatherPanel\">\n                <iframe id=\"weatherFrame\" src=\"https://www.msn.com/en-us/weather/weather-radar\" sandbox=\"allow-scripts allow-same-origin\"></iframe>\n            </div>
+            <div id=\"weatherPanel\">\n                <iframe id=\"weatherFrame\" src=\"https://weather.apple.com\" sandbox=\"allow-scripts allow-same-origin\"></iframe>\n            </div>
         </div>
         <script>
             const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
