@@ -165,16 +165,14 @@ if uploaded is not None:
         st.write(geojson)
 
         # offer a downloadable 3D model (OBJ format)
-        try:
-            from droneflight.kmz import kmz_to_obj
-
-            thickness = st.number_input("Ribbon thickness (m)", min_value=0.0, value=0.0, step=0.1)
-            obj_text = kmz_to_obj(raw, thickness=thickness)
-            st.download_button("Download 3D model (OBJ)", data=obj_text,
-                                file_name="flight_path.obj", mime="text/plain")
-        except Exception:
-            # if conversion fails we silently ignore
-            pass
+        # older versions of the app allowed downloading a generated OBJ
+        # model, however the current requirements forbid exporting anything
+        # derived from the KMZ.  The backend helper :func:`kmz_to_obj` is
+        # still available for internal use and unit tests, but we deliberately
+        # do not expose it in the UI.
+        #
+        # hence, no download button is shown here.
+        pass
 
         # embed raw KMZ bytes into the HTML so the client (browser) can parse
         import base64
