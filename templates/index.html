@@ -29,7 +29,8 @@
             <input type="number" id="widthInput" value="10" min="0" step="1" style="width:60px;" />
             <button id="startDraw">Start new line</button>
             <button id="finishDraw">Finish line</button>
-            <button id="clearDrawings">Clear drawings</button>    <br />
+            <button id="clearDrawings">Clear drawings</button>
+            <button id="droneBtn">Trace Drone</button>    <br />
             <label for="coordsText">Or paste lon,lat pairs:</label><br/>
             <textarea id="coordsText" rows="3" cols="60" placeholder="-122.42,37.77 -122.41,37.78"></textarea><br/>
             <button id="loadCoordsBtn">Load coordinates</button>
@@ -253,3 +254,472 @@
 </body>
 </html>
 
+US Aviation Sectional Chart Uploader
+=====================================
+Parses a KMZ file to extract geographic bounds, downloads the corresponding
+FAA VFR Sectional Chart imagery from a public ArcGIS MapServer, and produces
+georeferenced output aligned with the KMZ area.
+Outputs:
+  - A high-resolution PNG of the sectional chart clipped to the KMZ bounds
+  - A KMZ file containing the sectional chart as a ground overlay (can be
+    loaded alongside the original KMZ in Google Earth or other GIS tools)
+  - A world file (.pgw) for georeferencing the PNG in GIS software
+Data source: Texas A&M University GIS Lab - FAA Sectional Charts MapServer
+  https://twcgis.tamu.edu/arcgis/rest/services/Aviation/FAA_Sectional_Charts/MapServer
+Usage:
+    python sectional_chart_uploader.py <input.kmz> [--output-dir OUTPUT_DIR]
+                                                    [--dpi DPI]
+                                                    [--format png|jpg]
+                                                    [--padding PADDING]
+"""
+import argparse
+import io
+import math
+import os
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
+from pathlib import Path
+import requests
+from PIL import Image
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+# TAMU ArcGIS REST endpoint for FAA Sectional Charts (EPSG:4326 support)
+ARCGIS_EXPORT_URL = (
+    "https://twcgis.tamu.edu/arcgis/rest/services/"
+    "Aviation/FAA_Sectional_Charts/MapServer/export"
+)
+# ArcGIS MapServer max image dimension
+MAX_IMAGE_DIM = 4096
+# KML XML namespace
+KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
+# Fallback namespace (older KML files)
+KML_NS_OLD = {"kml": "http://earth.google.com/kml/2.1"}
+# ---------------------------------------------------------------------------
+# KMZ / KML Parsing
+# ---------------------------------------------------------------------------
+def extract_kml_from_kmz(kmz_path: str) -> str:
+    """Extract the main KML document from a KMZ (zipped KML) file."""
+    with zipfile.ZipFile(kmz_path, "r") as zf:
+        # KMZ files may contain multiple files; the root KML is usually
+        # the first .kml file or 'doc.kml'
+        kml_names = [n for n in zf.namelist() if n.lower().endswith(".kml")]
+        if not kml_names:
+            raise ValueError(f"No KML file found inside {kmz_path}")
+        # Prefer doc.kml if present
+        kml_file = "doc.kml" if "doc.kml" in kml_names else kml_names[0]
+        print(f"  Extracting KML: {kml_file}")
+        return zf.read(kml_file).decode("utf-8")
+def parse_coordinates(coord_text: str) -> list[tuple[float, float, float]]:
+    """
+    Parse a KML coordinate string into a list of (lon, lat, alt) tuples.
+    KML format: lon,lat[,alt] separated by whitespace.
+    """
+    coords = []
+    for token in coord_text.strip().split():
+        parts = token.split(",")
+        if len(parts) >= 2:
+            lon = float(parts[0])
+            lat = float(parts[1])
+            alt = float(parts[2]) if len(parts) > 2 else 0.0
+            coords.append((lon, lat, alt))
+    return coords
+def extract_bounds_from_kml(kml_text: str) -> dict:
+    """
+    Parse KML text and extract the geographic bounding box.
+    Searches for <coordinates>, <LatLonBox>, <LatLonAltBox>, and <Location> elements.
+    Returns dict with keys: min_lon, max_lon, min_lat, max_lat
+    """
+    root = ET.fromstring(kml_text)
+    # Determine namespace
+    ns = KML_NS
+    if root.tag.startswith("{http://earth.google.com/kml/2.1}"):
+        ns = KML_NS_OLD
+    elif not root.tag.startswith("{http://www.opengis.net/kml/2.2}"):
+        # Try without namespace
+        ns = {"kml": ""}
+    all_lons = []
+    all_lats = []
+    # --- Method 1: Search for <coordinates> elements ---
+    for elem in root.iter():
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag == "coordinates" and elem.text:
+            coords = parse_coordinates(elem.text)
+            for lon, lat, _ in coords:
+                all_lons.append(lon)
+                all_lats.append(lat)
+    # --- Method 2: Search for <LatLonBox> (ground overlays) ---
+    for elem in root.iter():
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag in ("LatLonBox", "LatLonAltBox"):
+            for child in elem:
+                child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if child_tag == "north" and child.text:
+                    all_lats.append(float(child.text))
+                elif child_tag == "south" and child.text:
+                    all_lats.append(float(child.text))
+                elif child_tag == "east" and child.text:
+                    all_lons.append(float(child.text))
+                elif child_tag == "west" and child.text:
+                    all_lons.append(float(child.text))
+    # --- Method 3: Search for <Location> elements (models) ---
+    for elem in root.iter():
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag == "Location":
+            lon_val = lat_val = None
+            for child in elem:
+                child_tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if child_tag == "longitude" and child.text:
+                    lon_val = float(child.text)
+                elif child_tag == "latitude" and child.text:
+                    lat_val = float(child.text)
+            if lon_val is not None and lat_val is not None:
+                all_lons.append(lon_val)
+                all_lats.append(lat_val)
+    if not all_lons or not all_lats:
+        raise ValueError(
+            "Could not extract any geographic coordinates from the KML. "
+            "Ensure the KMZ contains placemarks, polygons, or ground overlays "
+            "with coordinate data."
+        )
+    bounds = {
+        "min_lon": min(all_lons),
+        "max_lon": max(all_lons),
+        "min_lat": min(all_lats),
+        "max_lat": max(all_lats),
+    }
+    print(f"  Extracted bounds:")
+    print(f"    Latitude:  {bounds['min_lat']:.6f} to {bounds['max_lat']:.6f}")
+    print(f"    Longitude: {bounds['min_lon']:.6f} to {bounds['max_lon']:.6f}")
+    return bounds
+# ---------------------------------------------------------------------------
+# Coordinate Utilities
+# ---------------------------------------------------------------------------
+def add_padding(bounds: dict, padding_pct: float) -> dict:
+    """Add padding around the bounding box (as a percentage of extent)."""
+    lon_range = bounds["max_lon"] - bounds["min_lon"]
+    lat_range = bounds["max_lat"] - bounds["min_lat"]
+    pad_lon = lon_range * padding_pct
+    pad_lat = lat_range * padding_pct
+    return {
+        "min_lon": bounds["min_lon"] - pad_lon,
+        "max_lon": bounds["max_lon"] + pad_lon,
+        "min_lat": bounds["min_lat"] - pad_lat,
+        "max_lat": bounds["max_lat"] + pad_lat,
+    }
+def compute_image_size(bounds: dict, dpi: int = 150) -> tuple[int, int]:
+    """
+    Compute a suitable image size in pixels for the given bounds.
+    Uses approximate ground distance to determine aspect ratio, then
+    scales to fit within MAX_IMAGE_DIM while respecting the DPI hint.
+    """
+    lon_range = bounds["max_lon"] - bounds["min_lon"]
+    lat_range = bounds["max_lat"] - bounds["min_lat"]
+    # Approximate aspect ratio accounting for latitude
+    mid_lat = (bounds["min_lat"] + bounds["max_lat"]) / 2.0
+    cos_lat = math.cos(math.radians(mid_lat))
+    width_deg = lon_range * cos_lat
+    height_deg = lat_range
+    if width_deg == 0 or height_deg == 0:
+        return (MAX_IMAGE_DIM, MAX_IMAGE_DIM)
+    aspect = width_deg / height_deg
+    # Scale so neither dimension exceeds MAX_IMAGE_DIM
+    if aspect >= 1.0:
+        width = min(MAX_IMAGE_DIM, max(1024, dpi * 10))
+        height = int(width / aspect)
+    else:
+        height = min(MAX_IMAGE_DIM, max(1024, dpi * 10))
+        width = int(height * aspect)
+    # Clamp
+    width = max(256, min(width, MAX_IMAGE_DIM))
+    height = max(256, min(height, MAX_IMAGE_DIM))
+    return (width, height)
+# ---------------------------------------------------------------------------
+# ArcGIS Map Export
+# ---------------------------------------------------------------------------
+def fetch_sectional_chart(
+    bounds: dict,
+    width: int,
+    height: int,
+    img_format: str = "png",
+    dpi: int = 150,
+) -> bytes:
+    """
+    Fetch FAA Sectional Chart imagery from the TAMU ArcGIS MapServer.
+    The export endpoint returns a map image for the given bounding box.
+    Spatial reference 4326 = WGS84 geographic coordinates (lon/lat).
+    """
+    bbox_str = (
+        f"{bounds['min_lon']},{bounds['min_lat']},"
+        f"{bounds['max_lon']},{bounds['max_lat']}"
+    )
+    params = {
+        "bbox": bbox_str,
+        "bboxSR": "4326",
+        "imageSR": "4326",
+        "size": f"{width},{height}",
+        "format": img_format,
+        "dpi": dpi,
+        "transparent": "true",
+        "layers": "show:0",  # FAA_Sectional_Chart_Mosaic layer
+        "f": "image",
+    }
+    print(f"  Requesting sectional chart image ({width}x{height} px)...")
+    print(f"  Bounding box: {bbox_str}")
+    resp = requests.get(ARCGIS_EXPORT_URL, params=params, timeout=120)
+    resp.raise_for_status()
+    content_type = resp.headers.get("Content-Type", "")
+    if "image" not in content_type and "octet" not in content_type:
+        # Might be a JSON error response
+        raise RuntimeError(
+            f"MapServer did not return an image. "
+            f"Content-Type: {content_type}\n"
+            f"Response: {resp.text[:500]}"
+        )
+    print(f"  Received {len(resp.content):,} bytes")
+    return resp.content
+def fetch_sectional_tiled(
+    bounds: dict,
+    img_format: str = "png",
+    dpi: int = 150,
+    max_tile_dim: int = 4096,
+) -> tuple[Image.Image, int, int]:
+    """
+    For very large areas, tile the request into multiple sub-images
+    and stitch them together. Returns the final PIL Image and its
+    full (width, height).
+    """
+    # Decide if tiling is needed
+    base_w, base_h = compute_image_size(bounds, dpi)
+    # For a single tile
+    if base_w <= max_tile_dim and base_h <= max_tile_dim:
+        data = fetch_sectional_chart(bounds, base_w, base_h, img_format, dpi)
+        img = Image.open(io.BytesIO(data))
+        return img, base_w, base_h
+    # Multiple tiles needed
+    n_cols = math.ceil(base_w / max_tile_dim)
+    n_rows = math.ceil(base_h / max_tile_dim)
+    tile_w = math.ceil(base_w / n_cols)
+    tile_h = math.ceil(base_h / n_rows)
+    lon_step = (bounds["max_lon"] - bounds["min_lon"]) / n_cols
+    lat_step = (bounds["max_lat"] - bounds["min_lat"]) / n_rows
+    print(f"  Tiling: {n_cols} cols x {n_rows} rows")
+    canvas = Image.new("RGBA", (tile_w * n_cols, tile_h * n_rows))
+    for row in range(n_rows):
+        for col in range(n_cols):
+            tile_bounds = {
+                "min_lon": bounds["min_lon"] + col * lon_step,
+                "max_lon": bounds["min_lon"] + (col + 1) * lon_step,
+                # Rows go from top (max_lat) to bottom (min_lat)
+                "min_lat": bounds["max_lat"] - (row + 1) * lat_step,
+                "max_lat": bounds["max_lat"] - row * lat_step,
+            }
+            data = fetch_sectional_chart(
+                tile_bounds, tile_w, tile_h, img_format, dpi
+            )
+            tile_img = Image.open(io.BytesIO(data)).convert("RGBA")
+            canvas.paste(tile_img, (col * tile_w, row * tile_h))
+    return canvas, canvas.width, canvas.height
+# ---------------------------------------------------------------------------
+# Output Generation
+# ---------------------------------------------------------------------------
+def write_world_file(path: str, bounds: dict, width: int, height: int) -> None:
+    """
+    Write a world file (.pgw / .jgw) for georeferencing.
+    The world file format (6 lines):
+      pixel_x_size
+      rotation_y (0)
+      rotation_x (0)
+      pixel_y_size (negative)
+      x_origin (center of top-left pixel)
+      y_origin (center of top-left pixel)
+    """
+    pixel_x = (bounds["max_lon"] - bounds["min_lon"]) / width
+    pixel_y = -(bounds["max_lat"] - bounds["min_lat"]) / height
+    x_origin = bounds["min_lon"] + pixel_x / 2
+    y_origin = bounds["max_lat"] + pixel_y / 2
+    with open(path, "w") as f:
+        f.write(f"{pixel_x:.12f}\n")
+        f.write("0.0\n")
+        f.write("0.0\n")
+        f.write(f"{pixel_y:.12f}\n")
+        f.write(f"{x_origin:.12f}\n")
+        f.write(f"{y_origin:.12f}\n")
+    print(f"  World file written: {path}")
+def create_output_kmz(
+    image_data: bytes,
+    bounds: dict,
+    output_path: str,
+    img_format: str = "png",
+) -> None:
+    """
+    Create a KMZ file containing the sectional chart as a GroundOverlay.
+    This KMZ can be loaded in Google Earth or any KMZ-compatible software
+    alongside the user's original KMZ to see them aligned.
+    """
+    img_filename = f"sectional_chart.{img_format}"
+    kml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>FAA VFR Sectional Chart</name>
+    <description>
+      US Aviation Sectional Chart overlay aligned to KMZ bounds.
+      Source: FAA via TAMU ArcGIS MapServer.
+    </description>
+    <GroundOverlay>
+      <name>Sectional Chart</name>
+      <Icon>
+        <href>{img_filename}</href>
+      </Icon>
+      <LatLonBox>
+        <north>{bounds['max_lat']:.8f}</north>
+        <south>{bounds['min_lat']:.8f}</south>
+        <east>{bounds['max_lon']:.8f}</east>
+        <west>{bounds['min_lon']:.8f}</west>
+        <rotation>0</rotation>
+      </LatLonBox>
+    </GroundOverlay>
+  </Document>
+</kml>"""
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("doc.kml", kml_content)
+        zf.writestr(img_filename, image_data)
+    print(f"  Output KMZ written: {output_path}")
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def process_kmz(
+    input_kmz: str,
+    output_dir: str | None = None,
+    dpi: int = 150,
+    img_format: str = "png",
+    padding: float = 0.05,
+) -> dict:
+    """
+    Main processing pipeline:
+      1. Parse the KMZ to extract geographic bounds
+      2. Fetch sectional chart imagery from ArcGIS MapServer
+      3. Write output files (PNG/JPG + world file + KMZ overlay)
+    Returns a dict of output file paths.
+    """
+    input_path = Path(input_kmz)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input KMZ not found: {input_kmz}")
+    if output_dir is None:
+        output_dir = str(input_path.parent)
+    os.makedirs(output_dir, exist_ok=True)
+    stem = input_path.stem
+    print(f"\n{'='*60}")
+    print(f"  US Aviation Sectional Chart Uploader")
+    print(f"{'='*60}")
+    print(f"\n[1/4] Parsing KMZ: {input_kmz}")
+    # --- Step 1: Extract bounds from KMZ ---
+    kml_text = extract_kml_from_kmz(input_kmz)
+    bounds = extract_bounds_from_kml(kml_text)
+    # --- Step 2: Add padding ---
+    padded_bounds = add_padding(bounds, padding)
+    print(f"\n[2/4] Padded bounds ({padding*100:.0f}% padding):")
+    print(f"    Latitude:  {padded_bounds['min_lat']:.6f} to {padded_bounds['max_lat']:.6f}")
+    print(f"    Longitude: {padded_bounds['min_lon']:.6f} to {padded_bounds['max_lon']:.6f}")
+    # --- Step 3: Fetch sectional chart ---
+    print(f"\n[3/4] Fetching FAA Sectional Chart from ArcGIS MapServer...")
+    chart_img, width, height = fetch_sectional_tiled(
+        padded_bounds, img_format, dpi
+    )
+    print(f"  Final image size: {width}x{height} pixels")
+    # --- Step 4: Write outputs ---
+    print(f"\n[4/4] Writing output files...")
+    # Save raster image
+    ext = img_format.lower()
+    img_path = os.path.join(output_dir, f"{stem}_sectional.{ext}")
+    if ext == "jpg":
+        chart_img.convert("RGB").save(img_path, quality=95)
+    else:
+        chart_img.save(img_path)
+    print(f"  Chart image: {img_path}")
+    # Save world file
+    wf_ext = "pgw" if ext == "png" else "jgw"
+    wf_path = os.path.join(output_dir, f"{stem}_sectional.{wf_ext}")
+    write_world_file(wf_path, padded_bounds, width, height)
+    # Save as KMZ overlay
+    buf = io.BytesIO()
+    if ext == "jpg":
+        chart_img.convert("RGB").save(buf, format="JPEG", quality=95)
+    else:
+        chart_img.save(buf, format="PNG")
+    kmz_path = os.path.join(output_dir, f"{stem}_sectional_overlay.kmz")
+    create_output_kmz(buf.getvalue(), padded_bounds, kmz_path, ext)
+    outputs = {
+        "image": img_path,
+        "world_file": wf_path,
+        "kmz_overlay": kmz_path,
+        "bounds": padded_bounds,
+        "image_size": (width, height),
+    }
+    print(f"\n{'='*60}")
+    print(f"  Done! Output files in: {output_dir}")
+    print(f"{'='*60}")
+    print(f"\n  Chart image:    {img_path}")
+    print(f"  World file:     {wf_path}")
+    print(f"  KMZ overlay:    {kmz_path}")
+    print(f"\nHow to use:")
+    print(f"  - Load '{os.path.basename(kmz_path)}' in Google Earth alongside")
+    print(f"    your original KMZ to see the sectional chart aligned.")
+    print(f"  - Use the PNG + world file (.{wf_ext}) in GIS software (QGIS, ArcGIS)")
+    print(f"    for georeferenced overlay (CRS: EPSG:4326 / WGS84).")
+    print()
+    return outputs
+def main():
+    parser = argparse.ArgumentParser(
+        description="Upload US Aviation Sectional Chart aligned with a KMZ file.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python sectional_chart_uploader.py flight_area.kmz
+  python sectional_chart_uploader.py route.kmz --output-dir ./charts --dpi 200
+  python sectional_chart_uploader.py airport.kmz --format jpg --padding 0.1
+        """,
+    )
+    parser.add_argument(
+        "input_kmz",
+        help="Path to the input KMZ file",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory (default: same directory as input KMZ)",
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=150,
+        help="Image DPI / resolution hint (default: 150)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["png", "jpg"],
+        default="png",
+        help="Output image format (default: png)",
+    )
+    parser.add_argument(
+        "--padding",
+        type=float,
+        default=0.05,
+        help="Padding around KMZ bounds as fraction (default: 0.05 = 5%%)",
+    )
+    args = parser.parse_args()
+    try:
+        process_kmz(
+            input_kmz=args.input_kmz,
+            output_dir=args.output_dir,
+            dpi=args.dpi,
+            img_format=args.format,
+            padding=args.padding,
+        )
+    except Exception as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        sys.exit(1)
+if __name__ == "__main__":
+    main()

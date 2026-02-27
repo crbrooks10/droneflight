@@ -14,6 +14,7 @@ def test_builder_includes_manual_coords():
     # thickness value present
     assert "const thickness = 5.0" in html
     assert "weatherPanel" in html and "iframe" in html
+    assert "droneBtn" in html
 
 
 def test_builder_handles_no_manual():

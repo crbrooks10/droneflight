@@ -12,3 +12,4 @@ def test_index_includes_coordinate_textarea():
     # should load our local weather endpoint and local Cesium assets
     assert '/weather' in text
     assert '/static/cesium.js' in text or 'Cesium.js' in text
+    assert 'id="droneBtn"' in text

@@ -60,11 +60,12 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
         </head>
         <body>
         <div id="mainContainer">
-            <div id="weatherPanel"><iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin" onerror="this.parentElement.innerText='Weather unavailable';"></iframe></div>
+            <div id="weatherPanel"><iframe id="weatherFrame" src="/weather" sandbox="allow-scripts allow-same-origin" onerror="this.parentElement.innerText='Weather unavailable';"></iframe></div>
             <div id="controls">
             <button id="startDraw">Start new line</button>
             <button id="finishDraw">Finish line</button>
             <button id="clearDrawings">Clear drawings</button>
+            <button id="droneBtn">Trace Drone</button>
         </div>
         <div id="cesiumContainer"></div>
         </div>
@@ -146,7 +147,25 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                             viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
                         }}
                     }});
-
+                    // drone tracing support for Streamlit
+                    let droneEntity = null;
+                    document.getElementById('droneBtn').addEventListener('click', () => {{
+                        if (!groups.length) return;
+                        if (droneEntity) {{ viewer.entities.remove(droneEntity); droneEntity = null; return; }}
+                        const coords = groups[0];
+                        const prop = new Cesium.SampledPositionProperty();
+                        for (let i = 0; i < coords.length; i += 2) {{
+                            const lon = coords[i], lat = coords[i+1];
+                            const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
+                            prop.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+                        }}
+                        droneEntity = viewer.entities.add({position: prop, point: { pixelSize: 12, color: Cesium.Color.YELLOW }});
+                        viewer.clock.startTime = Cesium.JulianDate.now();
+                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coords.length/2, new Cesium.JulianDate());
+                        viewer.clock.currentTime = viewer.clock.startTime;
+                        viewer.clock.multiplier = 1;
+                        viewer.clock.shouldAnimate = true;
+                    }});
                     // set clock to span the longest path
                     if (groups.length > 0) {{
                         const maxLen = Math.max(...groups.map(g => g.length / 2));
