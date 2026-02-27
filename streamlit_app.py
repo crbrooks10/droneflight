@@ -170,6 +170,9 @@ if uploaded is not None:
         import base64
         kmz_b64 = base64.b64encode(raw).decode('ascii')
 
+        # use a reasonable default corridor width for visualization
+        thickness = 10.0
+
         # Minimal Cesium HTML; use helper to avoid f-string brace issues
         html = _build_cesium_html(kmz_b64, thickness)
 
