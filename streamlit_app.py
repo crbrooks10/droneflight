@@ -159,7 +159,7 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                             const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
                             prop.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
                         }}
-                        droneEntity = viewer.entities.add({position: prop, point: { pixelSize: 12, color: Cesium.Color.YELLOW }});
+                        droneEntity = viewer.entities.add({{position: prop, point: {{ pixelSize: 12, color: Cesium.Color.YELLOW }}}});
                         viewer.clock.startTime = Cesium.JulianDate.now();
                         viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coords.length/2, new Cesium.JulianDate());
                         viewer.clock.currentTime = viewer.clock.startTime;
