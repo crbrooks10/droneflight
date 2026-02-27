@@ -27,20 +27,22 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             <link href=\"https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Widgets/widgets.css\" rel=\"stylesheet\" />
             <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}
             #mainContainer {{ display:flex; height:100%; }}
-            #cesiumContainer {{ flex:3; }}
-            #weatherPanel {{ flex:2; border-left:1px solid #ccc; }}
+            #mainContainer {{ display:flex; height:100%; }}
+            #weatherPanel {{ flex:1; order:0; border-right:1px solid #ccc; }}
+            #controls {{ order:1; padding:8px; }}
+            #cesiumContainer {{ flex:3; order:2; }}
             #weatherPanel iframe {{ width:100%; height:100%; border:0; }}
             </style>
         </head>
         <body>
         <div id="mainContainer">
-            <div id=\"controls\">
-            <button id=\"startDraw\">Start new line</button>
-            <button id=\"finishDraw\">Finish line</button>
-            <button id=\"clearDrawings\">Clear drawings</button>
+            <div id="weatherPanel"><iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin"></iframe></div>
+            <div id="controls">
+            <button id="startDraw">Start new line</button>
+            <button id="finishDraw">Finish line</button>
+            <button id="clearDrawings">Clear drawings</button>
         </div>
-        <div id=\"cesiumContainer\"></div>
-            <div id=\"weatherPanel\">\n                <iframe id=\"weatherFrame\" src=\"https://weather.apple.com\" sandbox=\"allow-scripts allow-same-origin\"></iframe>\n            </div>
+        <div id="cesiumContainer"></div>
         </div>
         <script>
             const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});

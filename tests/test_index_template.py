@@ -8,4 +8,4 @@ def test_index_includes_coordinate_textarea():
     assert re.search(r"loadCoordsBtn" , text)
     # weather panel iframe should appear
     assert 'id="weatherPanel"' in text
-    assert 'iframe' in text and 'weather.apple.com' in text
+    assert 'iframe' in text and 'mscweather.com/weekly' in text

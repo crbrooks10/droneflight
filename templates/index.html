@@ -8,15 +8,18 @@
     <style>
         body, html { height: 100%; margin: 0; padding: 0; }
         #mainContainer { display: flex; height: 100%; }
-        #leftPanel { flex: 3; display: flex; flex-direction: column; }
+        #weatherPanel { flex: 1; order: 0; border-right: 1px solid #ccc; }
+        #leftPanel { flex: 4; order: 1; display: flex; flex-direction: column; }
         #cesiumContainer { flex: 1; }
         #controls { padding: 8px; }
-        #weatherPanel { flex: 1; border-left: 1px solid #ccc; }
         #weatherPanel iframe { width: 100%; height: 100%; }
     </style>
 </head>
 <body>
 <div id="mainContainer">
+    <div id="weatherPanel">
+        <iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin" frameborder="0"></iframe>
+    </div>
     <div id="leftPanel">
         <div id="controls">
             <input type="file" id="kmzInput">
@@ -29,12 +32,12 @@
             <label for="coordsText">Or paste lon,lat pairs:</label><br/>
             <textarea id="coordsText" rows="3" cols="60" placeholder="-122.42,37.77 -122.41,37.78"></textarea><br/>
             <button id="loadCoordsBtn">Load coordinates</button>
+            <br/>
+            <label for="objOutput">Generated OBJ:</label><br/>
+            <pre id="objOutput" style="height:150px; overflow:auto; background:#f0f0f0;
+                padding:8px; border:1px solid #ccc;"></pre>
         </div>
         <div id="cesiumContainer"></div>
-    </div>
-    <div id="weatherPanel">
-        <!-- weather radar iframe from MSN -->
-        <iframe id="weatherFrame" src="https://weather.apple.com" sandbox="allow-scripts allow-same-origin" frameborder="0"></iframe>
     </div>
 </div>
 <script>
@@ -157,60 +160,34 @@
         if (!fileInput.files.length) return;
         const file = fileInput.files[0];
 
-        // ensure JSZip is available before proceeding
-        if (typeof JSZip === 'undefined') {
-            await new Promise((resolve, reject) => {
-                const s = document.createElement('script');
-                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js';
-                s.onload = resolve;
-                s.onerror = reject;
-                document.head.appendChild(s);
-            });
-        }
+        const form = new FormData();
+        form.append('file', file);
 
-        const reader = new FileReader();
-        reader.onload = async function(e) {
-            try {
-                const arrayBuffer = e.target.result;
-                const zip = await JSZip.loadAsync(arrayBuffer);
-                const kmlFiles = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith('.kml'));
-                if (!kmlFiles.length) {
-                    alert('No KML files found inside KMZ');
-                    return;
-                }
-
-                const groups = [];
-                for (const name of kmlFiles) {
-                    const text = await zip.file(name).async('string');
-                    const re = /<coordinates>([^<]+)<\/coordinates>/g;
-                    let m;
-                    while ((m = re.exec(text)) !== null) {
-                        const coordsText = m[1].trim();
-                        const parts = coordsText.split(/\s+/);
-                        const flat = [];
-                        for (const p of parts) {
-                            const comps = p.split(',');
-                            if (comps.length >= 2) {
-                                flat.push(parseFloat(comps[0]));
-                                flat.push(parseFloat(comps[1]));
-                            }
-                        }
-                        if (flat.length >= 4) groups.push(flat);
-                    }
-                }
-
-                if (!groups.length) {
-                    alert('No coordinates found in KML files');
-                    return;
-                }
-
-                currentGroups = groups;
-                renderGroups();
-            } catch (err) {
-                alert('Failed to parse KMZ client-side: ' + err);
+        try {
+            const resp = await fetch('/upload-kmz', { method: 'POST', body: form });
+            if (!resp.ok) {
+                const text = await resp.text();
+                alert('Server error: ' + text);
+                return;
             }
-        };
-        reader.readAsArrayBuffer(file);
+            const data = await resp.json();
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            // display geojson if needed
+            if (data.geojson) {
+                // convert coordinates back to groups for rendering
+                const coords = data.geojson.coordinates || [];
+                currentGroups = [coords.flat()];
+                renderGroups();
+            }
+            if (data.obj) {
+                document.getElementById('objOutput').textContent = data.obj;
+            }
+        } catch (err) {
+            alert('Upload failed: ' + err);
+        }
     });
 
     document.getElementById('loadCoordsBtn').addEventListener('click', () => {
