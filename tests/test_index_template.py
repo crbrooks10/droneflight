@@ -6,3 +6,6 @@ def test_index_includes_coordinate_textarea():
     assert 'id="loadCoordsBtn"' in text
     # should have JS handler registration
     assert re.search(r"loadCoordsBtn" , text)
+    # weather panel iframe should appear
+    assert 'id="weatherPanel"' in text
+    assert 'iframe' in text and 'msn.com' in text
