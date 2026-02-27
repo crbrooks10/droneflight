@@ -188,12 +188,25 @@
             // display geojson if needed
             if (data.geojson) {
                 // convert geojson coords to lon/lat pairs only (drop altitude)
-                const coords = (data.geojson.coordinates || []).map(c => [c[0], c[1]]);
-                // flatten into single array
+                const coordsRaw = (data.geojson.coordinates || []);
+                // build flat lon/lat array for corridor rendering
+                const coords = coordsRaw.map(c => [c[0], c[1]]);
                 const flat = [];
                 coords.forEach(c => { flat.push(c[0]); flat.push(c[1]); });
                 currentGroups = [flat];
                 renderGroups();
+                // if coordinates include altitude, render an altitude polyline as preview
+                try {
+                    const hasAlt = coordsRaw.length && coordsRaw[0].length >= 3;
+                    if (hasAlt) {
+                        const positions = coordsRaw.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0));
+                        viewer.entities.add({
+                            polyline: { positions: positions, width: 3, material: Cesium.Color.CYAN }
+                        });
+                    }
+                } catch (ex) {
+                    console.error('failed to render preview polyline', ex);
+                }
             }
             if (data.obj) {
                 document.getElementById('objOutput').textContent = data.obj;

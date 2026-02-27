@@ -105,10 +105,19 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                             const resp = await fetch('/upload-kmz', {{method:'POST', body: form}});
                             const json = await resp.json();
                             if (json.geojson && json.geojson.coordinates) {{
-                                const coordsArr = json.geojson.coordinates.map(c=>[c[0],c[1]]);
+                                const coordsRaw = json.geojson.coordinates;
+                                const coordsArr = coordsRaw.map(c=>[c[0],c[1]]);
                                 const flat = [];
                                 coordsArr.forEach(c=>{{ flat.push(c[0]); flat.push(c[1]); }});
                                 groups = [flat];
+                                // if altitude present, render altitude polyline preview
+                                try {{
+                                    const hasAlt = coordsRaw.length && coordsRaw[0].length >= 3;
+                                    if (hasAlt) {{
+                                        const positions = coordsRaw.map(c=>Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0));
+                                        viewer.entities.add({{ polyline: {{ positions: positions, width:3, material: Cesium.Color.CYAN }} }});
+                                    }}
+                                }} catch(e) {{ console.error('preview polyline failed', e); }}
                             }}
                             if (json.obj) {{
                                 // render OBJ altitude polyline
