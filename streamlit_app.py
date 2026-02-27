@@ -52,16 +52,20 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}
             #mainContainer {{ display:flex; height:100%; }}
             #weatherPanel {{ flex: 0 0 75%; order:0; border-right:1px solid #ccc; min-width:480px; box-sizing:border-box; padding-right:8px; }}
+            #kmlPanel {{ width:100%; height:100%; overflow:auto; padding:12px; box-sizing:border-box; background:#f9f9f9; }}
+            #kmlPanel h3 {{ margin-top:0; }}
+            .kml-route {{ margin-bottom:12px; padding:8px; background:white; border:1px solid #ddd; border-radius:4px; }}
+            .kml-route-title {{ font-weight:bold; margin-bottom:4px; }}
+            .kml-coords {{ font-family:monospace; font-size:11px; max-height:150px; overflow:auto; white-space:pre-wrap; background:#f0f0f0; padding:4px; border-radius:2px; }}
             #controls {{ flex: 0 0 auto; order:1; padding:8px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
             #cesiumContainer {{ flex:1; order:2; min-width:200px; }}
-            #weatherPanel iframe {{ width:100%; height:100%; border:0; }}
             #fullscreenBtn {{ padding:4px 8px; font-size:12px; cursor:pointer; }}
             #mainContainer.fullscreen {{ position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; }}
             </style>
         </head>
         <body>
         <div id="mainContainer">
-            <div id="weatherPanel"><iframe id="weatherFrame" src="/weather" sandbox="allow-scripts allow-same-origin" onerror="this.parentElement.innerText='Weather unavailable';"></iframe></div>
+            <div id="weatherPanel"><div id="kmlPanel"><h3>KML Routes</h3><p style="color: #888;">Upload a KMZ file to display KML lines here.</p></div></div>
             <div id="controls">
             <button id="fullscreenBtn" title="Toggle fullscreen">⛶ Fullscreen</button>
             <button id="startDraw">Start new line</button>
@@ -91,6 +95,24 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                 for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
                 return bytes;
             }}
+            
+            function displayKMLRoutes(geojson) {{
+                const panel = document.getElementById('kmlPanel');
+                if (!geojson || !geojson.coordinates) {{
+                    panel.innerHTML = '<h3>KML Routes</h3><p style="color: #888;">No route data available.</p>';
+                    return;
+                }}
+                const coords = geojson.coordinates;
+                let html = '<h3>KML Routes</h3>';
+                html += `<div class="kml-route"><div class="kml-route-title">Total Waypoints: ${{coords.length}}</div>`;
+                html += '<div class="kml-coords">';
+                coords.forEach((c, i) => {{
+                    const lon = c[0].toFixed(6), lat = c[1].toFixed(6), alt = (c[2] || 0).toFixed(1);
+                    html += `${{i + 1}}. [${{lon}}, ${{lat}}, ${{alt}}m]\\n`;
+                }});
+                html += '</div></div>';
+                panel.innerHTML = html;
+            }}
 
             (async function() {{
                 try {{
@@ -112,6 +134,8 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                                 const flat = [];
                                 coordsArr.forEach(c=>{{ flat.push(c[0]); flat.push(c[1]); }});
                                 groups = [flat];
+                                // display KML routes in side panel
+                                displayKMLRoutes(json.geojson);
                                 // if altitude present, render altitude polyline preview
                                 try {{
                                     const hasAlt = coordsRaw.length && coordsRaw[0].length >= 3;
