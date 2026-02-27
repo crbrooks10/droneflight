@@ -80,19 +80,27 @@ def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
                     }});
                     if (firstEntity) viewer.zoomTo(firstEntity);
 
-                    if (firstEntity) {{
-                        const coords = groups[0];
-                        const property = new Cesium.SampledPositionProperty();
-                        for (let i = 0; i < coords.length; i += 2) {{
-                            const lon = coords[i]; const lat = coords[i+1];
-                            const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                            property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+                    // animate along ALL KML lines, not just the first
+                    groups.forEach((coords) => {{
+                        if (coords.length >= 2) {{
+                            const property = new Cesium.SampledPositionProperty();
+                            for (let i = 0; i < coords.length; i += 2) {{
+                                const lon = coords[i]; const lat = coords[i+1];
+                                const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
+                                property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
+                            }}
+                            viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
                         }}
-                        // outer braces doubled to avoid Python interpreting ``position``
-                        viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
+                    }});
+
+                    // set clock to span the longest path
+                    if (groups.length > 0) {{
+                        const maxLen = Math.max(...groups.map(g => g.length / 2));
                         viewer.clock.startTime = Cesium.JulianDate.now();
-                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, groups[0].length/2, new Cesium.JulianDate());
-                        viewer.clock.currentTime = viewer.clock.startTime; viewer.clock.multiplier = 1; viewer.clock.shouldAnimate = true;
+                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, maxLen, new Cesium.JulianDate());
+                        viewer.clock.currentTime = viewer.clock.startTime;
+                        viewer.clock.multiplier = 1;
+                        viewer.clock.shouldAnimate = true;
                     }}
                 }} catch (err) {{ console.error('KMZ parse failed', err); }}
             }})();
@@ -130,23 +138,7 @@ def _build_cesium_html(kmz_b64: str, thickness: float) -> str:
                 if (currentEntity) {{ viewer.entities.remove(currentEntity); currentEntity = null; }}
             }});
 
-            // animate along first group if available
-            if (groups.length && groups[0].length >= 2) {{
-                const coordsAnim = groups[0];
-                const property = new Cesium.SampledPositionProperty();
-                for (let i = 0; i < coordsAnim.length; i += 2) {{
-                    const lon = coordsAnim[i];
-                    const lat = coordsAnim[i+1];
-                    const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                    property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
-                }}
-                viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
-                viewer.clock.startTime = Cesium.JulianDate.now();
-                viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coordsAnim.length/2, new Cesium.JulianDate());
-                viewer.clock.currentTime = viewer.clock.startTime;
-                viewer.clock.multiplier = 1;
-                viewer.clock.shouldAnimate = true;
-            }}
+            // Drawing support - same as Flask frontend
         </script>
         </body>
         </html>
