@@ -36,7 +36,7 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
         </head>
         <body>
         <div id="mainContainer">
-            <div id="weatherPanel"><iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin"></iframe></div>
+            <div id="weatherPanel"><iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin" onerror="this.parentElement.innerText='Weather unavailable';"></iframe></div>
             <div id="controls">
             <button id="startDraw">Start new line</button>
             <button id="finishDraw">Finish line</button>
@@ -45,7 +45,14 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
         <div id="cesiumContainer"></div>
         </div>
         <script>
-            const viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
+            let viewer;
+            try {{
+                viewer = new Cesium.Viewer('cesiumContainer', {{ terrainProvider: Cesium.createWorldTerrain() }});
+            }} catch (e) {{
+                console.error('Cesium initialization failed', e);
+                document.getElementById('cesiumContainer').innerText = '3D view failed to load; see console for details.';
+                viewer = null;
+            }}
             const kmzBase64 = "{kmz}";
             const manualCoords = {coords_json};
             const thickness = {thickness};
@@ -70,26 +77,36 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                     let groups = [];
                     if (manualCoords && manualCoords.length) {{
                         groups = [manualCoords];
-                    }} else {{
-                        const data = b64ToUint8Array(kmzBase64).buffer;
-                        const zip = await JSZip.loadAsync(data);
-                        const kmlFiles = Object.keys(zip.files).filter(n => n.toLowerCase().endsWith('.kml'));
-                        for (const name of kmlFiles) {{
-                            const text = await zip.file(name).async('string');
-                            const re = /<coordinates>([^<]+)<\/coordinates>/g;
-                            let m;
-                            while ((m = re.exec(text)) !== null) {{
-                                const coordsText = m[1].trim();
-                                const parts = coordsText.split(/\s+/);
+                    }} else if (kmzBase64 && kmzBase64.length) {{
+                        // send KMZ to backend and use returned geojson/obj
+                        try {{
+                            const blob = new Blob([b64ToUint8Array(kmzBase64)], {{type:'application/vnd.google-earth.kmz'}});
+                            const form = new FormData();
+                            form.append('file', blob, 'upload.kmz');
+                            const resp = await fetch('/upload-kmz', {{method:'POST', body: form}});
+                            const json = await resp.json();
+                            if (json.geojson && json.geojson.coordinates) {{
+                                const coordsArr = json.geojson.coordinates.map(c=>[c[0],c[1]]);
                                 const flat = [];
-                                for (const p of parts) {{
-                                    const comps = p.split(',');
-                                    if (comps.length >= 2) {{ flat.push(parseFloat(comps[0])); flat.push(parseFloat(comps[1])); }}
-                                }}
-                                if (flat.length >= 4) groups.push(flat);
+                                coordsArr.forEach(c=>{{ flat.push(c[0]); flat.push(c[1]); }});
+                                groups = [flat];
                             }}
-                        }}
-                    }} // end else for manualCoords
+                            if (json.obj) {{
+                                // render OBJ altitude polyline
+                                const verts=[];
+                                json.obj.split('\n').forEach(l=>{{
+                                    if (l.startsWith('v ')) {{
+                                        const parts=l.split(/\s+/);
+                                        if (parts.length>=4) verts.push({{lon:parseFloat(parts[1]),lat:parseFloat(parts[2]),alt:parseFloat(parts[3])}});
+                                    }}
+                                }});
+                                if (verts.length>1) {{
+                                    const positions=verts.map(v=>Cesium.Cartesian3.fromDegrees(v.lon,v.lat,v.alt));
+                                    viewer.entities.add({{polyline: {{positions, width:4, material:Cesium.Color.GREEN}}}});
+                                }}
+                            }}
+                        }} catch(e) {{ console.error('server parse failed', e); }}
+                    }} // end else-if kmzBase64
                     let firstEntity = null;
                     groups.forEach((coordsArr) => {{
                         const e = viewer.entities.add({{ // braces doubled to escape f-string

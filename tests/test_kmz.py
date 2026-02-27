@@ -70,6 +70,7 @@ def test_streamlit_html_builder():
         file_uploader=lambda *args, **kwargs: None,
         number_input=lambda *args, **kwargs: 0.0,
         download_button=lambda *args, **kwargs: None,
+        text_area=lambda *args, **kwargs: "",
         success=lambda *args, **kwargs: None,
         write=lambda *args, **kwargs: None,
         error=lambda *args, **kwargs: None,

@@ -18,7 +18,7 @@
 <body>
 <div id="mainContainer">
     <div id="weatherPanel">
-        <iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin" frameborder="0"></iframe>
+        <iframe id="weatherFrame" src="https://mscweather.com/weekly" sandbox="allow-scripts allow-same-origin" frameborder="0" onerror="this.parentElement.innerText='Weather unavailable';"></iframe>
     </div>
     <div id="leftPanel">
         <div id="controls">
@@ -41,9 +41,16 @@
     </div>
 </div>
 <script>
-    const viewer = new Cesium.Viewer('cesiumContainer', {
-        terrainProvider: Cesium.createWorldTerrain()
-    });
+    let viewer;
+    try {
+        viewer = new Cesium.Viewer('cesiumContainer', {
+            terrainProvider: Cesium.createWorldTerrain()
+        });
+    } catch (e) {
+        console.error('Cesium initialization failed', e);
+        document.getElementById('cesiumContainer').innerText = '3D view failed to load; see console for details.';
+        viewer = null;
+    }
 
     // drawing/editing state
     let drawing = false;
@@ -177,13 +184,44 @@
             }
             // display geojson if needed
             if (data.geojson) {
-                // convert coordinates back to groups for rendering
-                const coords = data.geojson.coordinates || [];
-                currentGroups = [coords.flat()];
+                // convert geojson coords to lon/lat pairs only (drop altitude)
+                const coords = (data.geojson.coordinates || []).map(c => [c[0], c[1]]);
+                // flatten into single array
+                const flat = [];
+                coords.forEach(c => { flat.push(c[0]); flat.push(c[1]); });
+                currentGroups = [flat];
                 renderGroups();
             }
             if (data.obj) {
                 document.getElementById('objOutput').textContent = data.obj;
+                // render the OBJ as a 3D polyline using vertex heights
+                try {
+                    const verts = [];
+                    data.obj.split('\n').forEach(line => {
+                        if (line.startsWith('v ')) {
+                            const parts = line.split(/\s+/);
+                            if (parts.length >= 4) {
+                                verts.push({
+                                    lon: parseFloat(parts[1]),
+                                    lat: parseFloat(parts[2]),
+                                    alt: parseFloat(parts[3])
+                                });
+                            }
+                        }
+                    });
+                    if (verts.length > 1) {
+                        const positions = verts.map(v => Cesium.Cartesian3.fromDegrees(v.lon, v.lat, v.alt));
+                        viewer.entities.add({
+                            polyline: {
+                                positions: positions,
+                                width: 4,
+                                material: Cesium.Color.GREEN
+                            }
+                        });
+                    }
+                } catch (ex) {
+                    console.error('failed to render OBJ', ex);
+                }
             }
         } catch (err) {
             alert('Upload failed: ' + err);
