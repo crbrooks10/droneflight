@@ -51,9 +51,9 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             <script>{jszip_js}</script>
             <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}
             #mainContainer {{ display:flex; height:100%; }}
-            #weatherPanel {{ flex: 0 0 60%; order:0; border-right:1px solid #ccc; min-width:480px; box-sizing:border-box; padding-right:8px; }}
+            #weatherPanel {{ flex: 0 0 75%; order:0; border-right:1px solid #ccc; min-width:480px; box-sizing:border-box; padding-right:8px; }}
             #controls {{ flex: 0 0 auto; order:1; padding:8px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
-            #cesiumContainer {{ flex:1; order:2; min-width:320px; }}
+            #cesiumContainer {{ flex:1; order:2; min-width:200px; }}
             #weatherPanel iframe {{ width:100%; height:100%; border:0; }}
             #fullscreenBtn {{ padding:4px 8px; font-size:12px; cursor:pointer; }}
             #mainContainer.fullscreen {{ position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; }}
