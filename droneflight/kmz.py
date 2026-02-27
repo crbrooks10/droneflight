@@ -1,164 +1,90 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KMZ Viewer</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <style>
-        #map {
-            width: 100%;
-            height: 500px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Upload KMZ File</h1>
-    <input type="file" id="fileInput" accept=".kmz" />
-    <button id="uploadButton">Upload</button>
-    <div id="map"></div>
+"""Utilities for working with KMZ (Google Earth) files.
 
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/kml-parser"></script>
-    <script>
-        let map;
+This module provides helpers used throughout the project for parsing simple
+KMZ flight plans into GeoJSON and exporting them as lightweight 3D OBJ
+models.  The original repository included a largely untested JavaScript
+snippet here by mistake; the Python equivalents are implemented below.
+"""
 
-        // Initialize the map
-        function initMap() {
-            map = L.map('map').setView([0, 0], 2); // Center map at coordinates 0,0
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                maxZoom: 19,
-            }).addTo(map);
-        }
+import re
+import zipfile
+from io import BytesIO
+from typing import List, Dict, Any, Optional
 
-        document.getElementById('uploadButton').addEventListener('click', function() {
-            const fileInput = document.getElementById('fileInput');
-            const file = fileInput.files[0];
 
-            if (!file) {
-                alert('Please select a KMZ file.');
-                return;
-            }
+def parse_kmz(kmz_data: bytes) -> Dict[str, Any]:
+    """Return a GeoJSON LineString extracted from the first KML in ``kmz_data``.
 
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                const kmzData = event.target.result;
-                parseKMZ(kmzData);
-            };
-            reader.readAsArrayBuffer(file);
-        });
+    The helper searches for any ``*.kml`` file inside the KMZ archive and
+    looks for ``<coordinates>`` elements.  Only the first set of coordinates
+    is returned; the routine is intentionally minimal for the purposes of
+    the unit tests and the demo frontend.
+    """
+    buf = BytesIO(kmz_data)
+    with zipfile.ZipFile(buf, "r") as z:
+        # find first KML file
+        kml_name: Optional[str] = None
+        for name in z.namelist():
+            if name.lower().endswith(".kml"):
+                kml_name = name
+                break
+        if kml_name is None:
+            raise ValueError("no KML file found in KMZ archive")
+        kml_bytes = z.read(kml_name)
+    kml_text = kml_bytes.decode("utf-8", errors="ignore")
 
-        function parseKMZ(kmzData) {
-            const blob = new Blob([kmzData], { type: 'application/vnd.google-earth.kmz' });
-            const url = URL.createObjectURL(blob);
+    coords: List[List[float]] = []
+    for match in re.finditer(r"<coordinates>([^<]+)</coordinates>", kml_text):
+        raw = match.group(1).strip()
+        for part in raw.split():
+            comps = part.split(",")
+            if len(comps) >= 2:
+                lon = float(comps[0])
+                lat = float(comps[1])
+                alt = float(comps[2]) if len(comps) >= 3 and comps[2] != "" else 0.0
+                coords.append([lon, lat, alt])
+    if not coords:
+        raise ValueError("no coordinates found in KML file")
+    return {"type": "LineString", "coordinates": coords}
 
-            // Use the 'kml-parser' library to parse the KMZ file
-            fetch(url)
-                .then(response => response.blob())
-                .then(blob => {
-                    const kmlUrl = URL.createObjectURL(blob);
-                    fetch(kmlUrl)
-                        .then(response => response.text())
-                        .then(kmlText => {
-                            const kml = new KmlParser();
-                            const geoJson = kml.parse(kmlText);
-                            L.geoJSON(geoJson).addTo(map);
-                            map.fitBounds(L.geoJSON(geoJson).getBounds());
-                        });
-                });
-        }
 
-        // Initialize the map on page load
-        window.onload = initMap;
-    </script>
-</body>
-</html>
+def kmz_to_obj(kmz_data: bytes, thickness: float = 0.0) -> str:
+    """Convert a KMZ flight plan into a simple Wavefront OBJ string.
 
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KMZ Viewer</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <style>
-        #map {
-            width: 100%;
-            height: 500px;
-        }
-    </style>
-</head>
-<body>
-    <h1>Upload KMZ File</h1>
-    <input type="file" id="fileInput" accept=".kmz" />
-    <button id="uploadButton">Upload</button>
-    <div id="map"></div>
+    The returned model is either a polyline (``thickness <= 0``) or a narrow
+    ribbon mesh when a positive ``thickness`` is given.  The geometry mirrors
+    what :class:`droneflight.path_editor.FlightPathEditor` generates so that
+    both backends remain consistent.
+    """
+    geo = parse_kmz(kmz_data)
+    coords: List[List[float]] = geo.get("coordinates", [])
+    lines: List[str] = ["# generated by kmz.kmz_to_obj", "o flight_path"]
 
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
-    <script>
-        let map;
-
-        // Initialize the map
-        function initMap() {
-            map = L.map('map').setView([0, 0], 2);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                maxZoom: 19,
-            }).addTo(map);
-        }
-
-        document.getElementById('uploadButton').addEventListener('click', function() {
-            const fileInput = document.getElementById('fileInput');
-            const file = fileInput.files[0];
-
-            if (!file) {
-                alert('Please select a KMZ file.');
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                const kmzData = event.target.result;
-                parseKMZ(kmzData);
-            };
-            reader.readAsArrayBuffer(file);
-        });
-
-        function parseKMZ(kmzData) {
-            const blob = new Blob([kmzData], { type: 'application/vnd.google-earth.kmz' });
-            const url = URL.createObjectURL(blob);
-
-            // Use JSZip to read the KMZ contents
-            JSZip.loadAsync(kmzData).then(zip => {
-                // Look for the KML file inside the KMZ
-                const kmlFileName = Object.keys(zip.files).find(name => name.endsWith('.kml'));
-
-                if (!kmlFileName) {
-                    alert('No KML file found in the KMZ.');
-                    return;
-                }
-
-                zip.file(kmlFileName).async('text').then(kmlText => {
-                    // Parse the KML using the KML parser
-                    const parser = new DOMParser();
-                    const kmlDoc = parser.parseFromString(kmlText, 'text/xml');
-                    const geoJson = toGeoJSON.kml(kmlDoc);
-                    
-                    L.geoJSON(geoJson).addTo(map);
-                    map.fitBounds(L.geoJSON(geoJson).getBounds());
-                }).catch(err => {
-                    console.error('Error reading KML file:', err);
-                    alert('Error reading KML file.');
-                });
-            }).catch(err => {
-                console.error('Error loading KMZ file:', err);
-                alert('Error loading KMZ file.');
-            });
-        }
-
-        // Initialize the map on page load
-        window.onload = initMap;
-    </script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-    <script src="https://unpkg.com/@tmcw/togeojson@2.0.1/togeojson.js"></script>
-</body>
-</html>
+    if thickness <= 0 or len(coords) < 2:
+        for wp in coords:
+            if len(wp) == 3:
+                lon, lat, alt = wp
+            else:
+                lon, lat = wp
+                alt = 0.0
+            lines.append(f"v {lon} {lat} {alt}")
+        if len(coords) > 1:
+            idxs = " ".join(str(i + 1) for i in range(len(coords)))
+            lines.append(f"l {idxs}")
+    else:
+        # create ribbon mesh
+        for wp in coords:
+            if len(wp) == 3:
+                lon, lat, alt = wp
+            else:
+                lon, lat = wp
+                alt = 0.0
+            lines.append(f"v {lon} {lat} {alt}")
+            lines.append(f"v {lon} {lat} {alt + thickness}")
+        for i in range(len(coords) - 1):
+            v1 = 2 * i + 1
+            v2 = v1 + 2
+            v3 = v2 + 1
+            v4 = v1 + 1
+            lines.append(f"f {v1} {v2} {v3} {v4}")
+    return "\n".join(lines)

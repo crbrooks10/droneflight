@@ -70,11 +70,22 @@
         }
     });
 
-    document.getElementById('uploadBtn').addEventListener('click', () => {
+    document.getElementById('uploadBtn').addEventListener('click', async () => {
         const fileInput = document.getElementById('kmzInput');
         if (!fileInput.files.length) return;
         const file = fileInput.files[0];
         const width = parseFloat(document.getElementById('widthInput').value) || 0;
+
+        // ensure JSZip is available before proceeding
+        if (typeof JSZip === 'undefined') {
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js';
+                s.onload = resolve;
+                s.onerror = reject;
+                document.head.appendChild(s);
+            });
+        }
 
         const reader = new FileReader();
         reader.onload = async function(e) {
@@ -150,14 +161,6 @@
         reader.readAsArrayBuffer(file);
     });
 
-    // load JSZip from CDN
-    (function loadJSZip(){
-        if (window.JSZip) return;
-        const s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js';
-        s.onload = ()=>console.log('JSZip loaded');
-        document.head.appendChild(s);
-    })();
 </script>
 </body>
 </html>

@@ -1,7 +1,13 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from droneflight.kmz import parse_kmz
 
 app = Flask(__name__)
+
+@app.route('/')
+def index():
+    """Serve the main HTML interface."""
+    return render_template('index.html')
+
 
 @app.route('/upload-kmz', methods=['POST'])
 def upload_kmz():
