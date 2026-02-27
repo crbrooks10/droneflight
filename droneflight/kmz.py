@@ -4,12 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KMZ Viewer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <style>
-        #viewer {
+        #map {
             width: 100%;
             height: 500px;
-            border: 1px solid #ccc;
-            overflow: auto;
         }
     </style>
 </head>
@@ -17,9 +16,21 @@
     <h1>Upload KMZ File</h1>
     <input type="file" id="fileInput" accept=".kmz" />
     <button id="uploadButton">Upload</button>
-    <div id="viewer"></div>
+    <div id="map"></div>
 
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/kml-parser"></script>
     <script>
+        let map;
+
+        // Initialize the map
+        function initMap() {
+            map = L.map('map').setView([0, 0], 2); // Center map at coordinates 0,0
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+            }).addTo(map);
+        }
+
         document.getElementById('uploadButton').addEventListener('click', function() {
             const fileInput = document.getElementById('fileInput');
             const file = fileInput.files[0];
@@ -32,21 +43,33 @@
             const reader = new FileReader();
             reader.onload = function(event) {
                 const kmzData = event.target.result;
-                // Parse the KMZ file
                 parseKMZ(kmzData);
             };
             reader.readAsArrayBuffer(file);
         });
 
         function parseKMZ(kmzData) {
-            // Create a Blob from the KMZ data
             const blob = new Blob([kmzData], { type: 'application/vnd.google-earth.kmz' });
             const url = URL.createObjectURL(blob);
 
-            // Display the KMZ content (you might need to implement specific parsing logic)
-            const viewer = document.getElementById('viewer');
-            viewer.innerHTML = `<iframe src="${url}" width="100%" height="100%"></iframe>`;
+            // Use the 'kml-parser' library to parse the KMZ file
+            fetch(url)
+                .then(response => response.blob())
+                .then(blob => {
+                    const kmlUrl = URL.createObjectURL(blob);
+                    fetch(kmlUrl)
+                        .then(response => response.text())
+                        .then(kmlText => {
+                            const kml = new KmlParser();
+                            const geoJson = kml.parse(kmlText);
+                            L.geoJSON(geoJson).addTo(map);
+                            map.fitBounds(L.geoJSON(geoJson).getBounds());
+                        });
+                });
         }
+
+        // Initialize the map on page load
+        window.onload = initMap;
     </script>
 </body>
 </html>
