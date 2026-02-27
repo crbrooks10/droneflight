@@ -9,12 +9,14 @@
     <style>
         body, html { height: 100%; margin: 0; padding: 0; }
         #mainContainer { display: flex; height: 100%; }
-        /* Make weather panel significantly wider: fixed ~45% with larger min-width */
-        #weatherPanel { flex: 0 0 45%; max-width: 55%; order: 0; border-right: 1px solid #ccc; min-width: 480px; box-sizing: border-box; padding-right:8px; }
-        #leftPanel { flex: 1 1 55%; order: 1; display: flex; flex-direction: column; }
+        /* Make weather panel significantly wider: fixed ~60% */
+        #weatherPanel { flex: 0 0 60%; max-width: 70%; order: 0; border-right: 1px solid #ccc; min-width: 480px; box-sizing: border-box; padding-right:8px; }
+        #leftPanel { flex: 1 1 40%; order: 1; display: flex; flex-direction: column; }
         #cesiumContainer { flex: 1; min-width: 320px; }
-        #controls { padding: 8px; }
+        #controls { padding: 8px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
         #weatherPanel iframe { width: 100%; height: 100%; }
+        #fullscreenBtn { padding: 4px 8px; font-size: 12px; cursor: pointer; }
+        #mainContainer.fullscreen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 10000; }
     </style>
 </head>
 <body>
@@ -24,6 +26,7 @@
     </div>
     <div id="leftPanel">
         <div id="controls">
+            <button id="fullscreenBtn" title="Toggle fullscreen">⛶ Fullscreen</button>
             <input type="file" id="kmzInput">
             <button id="uploadBtn">Upload KMZ</button>
             <label for="widthInput">Corridor width (m):</label>
@@ -119,6 +122,19 @@
         if (currentEntity) {
             viewer.entities.remove(currentEntity);
             currentEntity = null;
+        }
+    });
+    
+    // Fullscreen toggle
+    document.getElementById('fullscreenBtn').addEventListener('click', () => {
+        const container = document.getElementById('mainContainer');
+        container.classList.toggle('fullscreen');
+        if (viewer) viewer.forceResize();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            document.getElementById('mainContainer').classList.remove('fullscreen');
+            if (viewer) viewer.forceResize();
         }
     });
 
