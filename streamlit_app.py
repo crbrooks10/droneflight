@@ -311,12 +311,26 @@ try {{
     navigationHelpButton: false,
     fullscreenButton: false,
     timeline: false,
+    imageryProvider: new Cesium.TileMapServiceImageryProvider({{
+      url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}',
+      enablePickFeatures: false
+    }})
   }});
   viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#1a1a2e');  // Solid dark blue background
   viewer.scene.globe.enableLighting = true;  // Enable terrain lighting
   
-  // Add terrain controls
+  // Add terrain controls and ensure visibility
   viewer.scene.globe.depthTestAgainstTerrain = true;
+  
+  // Set initial view to show terrain clearly
+  viewer.scene.mode = Cesium.SceneMode.SCENE3D;
+  viewer.scene.globe.showGroundAtmosphere = true;
+  
+  // Force terrain to be visible
+  viewer.terrainProvider.ready.then(function() {{
+    console.log('Terrain loaded successfully');
+    viewer.scene.requestRender();
+  }});
   
 }} catch(e) {{
   console.error('Cesium init failed', e);
@@ -585,13 +599,21 @@ function toggleTerrain() {{
       requestVertexNormals: true,
       requestWaterMask: true
     }});
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+    viewer.scene.globe.showGroundAtmosphere = true;
     document.getElementById('terrainBtn').classList.add('active');
-    setStatus('3D terrain enabled.');
+    setStatus('3D terrain enabled - showing elevation data.');
   }} else {{
     viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
+    viewer.scene.globe.enableLighting = false;
+    viewer.scene.globe.depthTestAgainstTerrain = false;
     document.getElementById('terrainBtn').classList.remove('active');
-    setStatus('3D terrain disabled.');
+    setStatus('3D terrain disabled - flat surface.');
   }}
+  
+  // Force re-render to show changes
+  viewer.scene.requestRender();
 }}
 
 // ── Mesh Size Control ───────────────────────────────────────────────────────
