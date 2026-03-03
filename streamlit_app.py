@@ -7,7 +7,7 @@ from streamlit.components.v1 import html as components_html
 import requests
 import datetime
 from typing import Dict, List, Optional
-from weather_functions import get_aviation_weather, display_weather_panel
+from weather import get_aviation_weather, display_weather_panel
 
 # ---------------------------------------------------------------------------
 # KMZ / KML parsing (self-contained, no external droneflight dependency)
