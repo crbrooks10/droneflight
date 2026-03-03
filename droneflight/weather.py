@@ -1,108 +1,95 @@
-"""Weather and radar integration for drone flight planning."""
+# ---------------------------------------------------------------------------
+# Weather API Integration
+# ---------------------------------------------------------------------------
 
 import requests
-import os
-from typing import Optional, Dict, Any
-from datetime import datetime
+import datetime
+from typing import Dict
+import streamlit as st
 
-
-class WeatherProvider:
-    """Fetch weather data for drone flight planning."""
-
-    def __init__(self, api_key: Optional[str] = None):
-        """Initialize weather provider with optional API key."""
-        self.api_key = api_key or os.getenv("OPENWEATHER_API_KEY")
-        self.base_url = "https://api.openweathermap.org/data/2.5"
-
-    def get_current_weather(self, lat: float, lon: float) -> Dict[str, Any]:
-        """Get current weather conditions for a location."""
-        if not self.api_key:
-            return {"error": "OpenWeather API key not configured", "status": "stub"}
-
-        try:
-            url = f"{self.base_url}/weather"
-            params = {"lat": lat, "lon": lon, "appid": self.api_key, "units": "metric"}
-            resp = requests.get(url, params=params, timeout=5)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            return {"error": str(e), "status": "failed"}
-
-    def get_forecast(
-        self, lat: float, lon: float, hours: int = 24
-    ) -> Dict[str, Any]:
-        """Get hourly forecast for the next N hours."""
-        if not self.api_key:
-            return {"error": "OpenWeather API key not configured", "status": "stub"}
-
-        try:
-            url = f"{self.base_url}/forecast"
-            params = {
-                "lat": lat,
-                "lon": lon,
-                "appid": self.api_key,
-                "units": "metric",
-                "cnt": hours,
+def get_aviation_weather(lat: float, lon: float) -> Dict:
+    """Fetch aviation weather data for given coordinates."""
+    try:
+        # Using OpenWeatherMap API (free tier available)
+        # In production, you'd want to use aviation-specific APIs like Aviation Weather Center
+        api_key = st.secrets.get("OPENWEATHER_API_KEY", "demo_key")
+        
+        # Current weather
+        weather_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+        
+        # Forecast
+        forecast_url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={api_key}&units=metric"
+        
+        weather_response = requests.get(weather_url, timeout=10)
+        forecast_response = requests.get(forecast_url, timeout=10)
+        
+        if weather_response.status_code == 200 and forecast_response.status_code == 200:
+            weather_data = weather_response.json()
+            forecast_data = forecast_response.json()
+            
+            return {
+                "current": {
+                    "temperature": weather_data["main"]["temp"],
+                    "humidity": weather_data["main"]["humidity"],
+                    "pressure": weather_data["main"]["pressure"],
+                    "wind_speed": weather_data["wind"]["speed"],
+                    "wind_direction": weather_data["wind"].get("deg", 0),
+                    "visibility": weather_data.get("visibility", 10000) / 1000,  # Convert to km
+                    "clouds": weather_data.get("clouds", {}).get("all", 0),
+                    "conditions": weather_data["weather"][0]["description"].title(),
+                    "timestamp": datetime.datetime.now().strftime("%H:%M UTC")
+                },
+                "forecast": [
+                    {
+                        "time": datetime.datetime.fromtimestamp(item["dt"]).strftime("%H:%M"),
+                        "temp": item["main"]["temp"],
+                        "wind_speed": item["wind"]["speed"],
+                        "conditions": item["weather"][0]["description"].title(),
+                        "clouds": item.get("clouds", {}).get("all", 0)
+                    }
+                    for item in forecast_data["list"][:8]  # Next 8 intervals (24 hours)
+                ]
             }
-            resp = requests.get(url, params=params, timeout=5)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            return {"error": str(e), "status": "failed"}
+        else:
+            return {"error": "Weather data unavailable"}
+            
+    except Exception as e:
+        return {"error": f"Weather API error: {str(e)}"}
 
-    def check_flight_conditions(
-        self, lat: float, lon: float, wind_limit_mps: float = 10.0
-    ) -> Dict[str, Any]:
-        """Check if current conditions are suitable for flight."""
-        weather = self.get_current_weather(lat, lon)
-        if "error" in weather:
-            return weather
-
-        wind_speed = weather.get("wind", {}).get("speed", 0)
-        clouds = weather.get("clouds", {}).get("all", 0)  # % coverage
-        rain = weather.get("rain", {}).get("1h", 0)  # mm/hour
-        visibility = weather.get("visibility", 10000)  # meters
-        temp = weather.get("main", {}).get("temp", 0)
-
-        safe = wind_speed <= wind_limit_mps and rain == 0 and visibility > 5000
-
-        return {
-            "safe": safe,
-            "wind_speed_mps": wind_speed,
-            "wind_limit_mps": wind_limit_mps,
-            "rain_mm_h": rain,
-            "cloud_coverage_pct": clouds,
-            "visibility_m": visibility,
-            "temp_c": temp,
-            "timestamp": datetime.now().isoformat(),
-        }
-
-
-class RadarProvider:
-    """Placeholder for radar/airspace integration."""
-
-    def __init__(self, base_url: Optional[str] = None):
-        """Initialize radar provider with optional base URL."""
-        self.base_url = base_url or os.getenv(
-            "RADAR_API_URL", "https://api.example.com/radar"
-        )
-
-    def get_nearby_activity(self, lat: float, lon: float, radius_nm: float = 5.0):
-        """Get nearby aircraft and airspace restrictions."""
-        # Placeholder: in production, integrate with ADS-B Exchange, NORAD, or FAA APIs
-        return {
-            "status": "stub",
-            "message": "Connect to real radar/airspace API (ADS-B, NORAD, FAA)",
-            "radius_nm": radius_nm,
-            "center": {"lat": lat, "lon": lon},
-            "nearby_activity": [],
-        }
-
-    def check_airspace(self, lat: float, lon: float) -> Dict[str, Any]:
-        """Check airspace restrictions (controlled, TFR, etc.)."""
-        return {
-            "status": "stub",
-            "message": "Connect to FAA Airspace API or local aviation database",
-            "restricted": False,
-            "location": {"lat": lat, "lon": lon},
-        }
+def display_weather_panel(weather_data: Dict, lat: float, lon: float):
+    """Display weather information in a formatted panel."""
+    if "error" in weather_data:
+        st.error(f"❌ {weather_data['error']}")
+        return
+    
+    current = weather_data["current"]
+    
+    st.markdown("### 🌤️ Current Weather")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Temperature", f"{current['temperature']:.1f}°C")
+        st.metric("Conditions", current["conditions"])
+    
+    with col2:
+        st.metric("Wind", f"{current['wind_speed']:.1f} m/s @ {current['wind_direction']}°")
+        st.metric("Visibility", f"{current['visibility']:.1f} km")
+    
+    with col3:
+        st.metric("Pressure", f"{current['pressure']:.0f} hPa")
+        st.metric("Humidity", f"{current['humidity']}%")
+    
+    st.markdown("### 📈 24-Hour Forecast")
+    forecast_df = []
+    for item in weather_data["forecast"]:
+        forecast_df.append({
+            "Time": item["time"],
+            "Temp (°C)": f"{item['temp']:.1f}",
+            "Wind (m/s)": f"{item['wind_speed']:.1f}",
+            "Conditions": item["conditions"],
+            "Clouds (%)": item["clouds"]
+        })
+    
+    st.dataframe(forecast_df, use_container_width=True, hide_index=True)
+    
+    st.caption(f"📍 Location: {lat:.4f}, {lon:.4f} | Updated: {current['timestamp']}")
