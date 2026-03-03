@@ -667,8 +667,9 @@ st.caption("presented by Charlie Brooks")
 
 st.markdown("---")
 
-# Initialize coordinate variable
-coords_geojson: list[list[float]] = []
+# Initialize session state for coordinates
+if 'coords_geojson' not in st.session_state:
+    st.session_state.coords_geojson = []
 
 # Create main layout with sidebar for weather
 main_col, weather_col = st.columns([3, 1])
@@ -677,10 +678,10 @@ with weather_col:
     st.markdown("### 🌤️ Weather Panel")
     
     # Get center coordinates for weather if available
-    if coords_geojson:
+    if st.session_state.coords_geojson:
         # Calculate center point of route
-        center_lat = sum(coord[1] for coord in coords_geojson) / len(coords_geojson)
-        center_lon = sum(coord[0] for coord in coords_geojson) / len(coords_geojson)
+        center_lat = sum(coord[1] for coord in st.session_state.coords_geojson) / len(st.session_state.coords_geojson)
+        center_lon = sum(coord[0] for coord in st.session_state.coords_geojson) / len(st.session_state.coords_geojson)
         
         # Add refresh button
         if st.button("🔄 Refresh Weather", key="refresh_weather"):
@@ -718,31 +719,33 @@ with main_col:
 if coords_text.strip():
     parts = coords_text.strip().replace("\n", " ").split()
     try:
+        temp_coords = []
         for p in parts:
             lon_s, lat_s = p.split(",")
-            coords_geojson.append([float(lon_s), float(lat_s), 0.0])
-        if len(coords_geojson) < 2:
+            temp_coords.append([float(lon_s), float(lat_s), 0.0])
+        if len(temp_coords) < 2:
             raise ValueError("Need at least two coordinate pairs.")
-        st.success(f"✅ {len(coords_geojson)} coordinates parsed from text input.")
+        st.session_state.coords_geojson = temp_coords
+        st.success(f"✅ {len(st.session_state.coords_geojson)} coordinates parsed from text input.")
     except Exception as e:
         st.error(f"❌ Could not parse coordinates: {e}")
-        coords_geojson = []
+        st.session_state.coords_geojson = []
 
 # Parse KMZ (overrides manual coords if both supplied)
 if uploaded is not None:
     try:
         raw = uploaded.read()
         geojson = parse_kmz(raw)
-        coords_geojson = geojson["coordinates"]
-        st.success(f"✅ KMZ parsed - {len(coords_geojson)} waypoints found.")
+        st.session_state.coords_geojson = geojson["coordinates"]
+        st.success(f"✅ KMZ parsed - {len(st.session_state.coords_geojson)} waypoints found.")
         with st.expander("GeoJSON preview"):
             st.json(geojson)
     except Exception as e:
         st.error(f"❌ Failed to parse KMZ: {e}")
 
 # Render map
-if coords_geojson or uploaded is None:
-    html_str = _build_cesium_html(coords_geojson)
+if st.session_state.coords_geojson or uploaded is None:
+    html_str = _build_cesium_html(st.session_state.coords_geojson)
     components_html(html_str, height=680, scrolling=False)
 else:
     st.info("📍 Upload a KMZ file or paste coordinates above to preview the route in 3D.")
