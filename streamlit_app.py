@@ -49,31 +49,141 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             <script>{cesium_js}</script>
             <style>{widgets_css}</style>
             <script>{jszip_js}</script>
-            <style>html, body, #cesiumContainer {{ height:100%; margin:0; padding:0; }}
-            #mainContainer {{ display:flex; height:100%; }}
-            #weatherPanel {{ flex: 0 0 75%; order:0; border-right:1px solid #ccc; min-width:480px; box-sizing:border-box; padding-right:8px; }}
-            #kmlPanel {{ width:100%; height:100%; overflow:auto; padding:12px; box-sizing:border-box; background:#f9f9f9; }}
-            #kmlPanel h3 {{ margin-top:0; }}
-            .kml-route {{ margin-bottom:12px; padding:8px; background:white; border:1px solid #ddd; border-radius:4px; }}
-            .kml-route-title {{ font-weight:bold; margin-bottom:4px; }}
-            .kml-coords {{ font-family:monospace; font-size:11px; max-height:150px; overflow:auto; white-space:pre-wrap; background:#f0f0f0; padding:4px; border-radius:2px; }}
-            #controls {{ flex: 0 0 auto; order:1; padding:8px; display:flex; flex-wrap:wrap; gap:4px; align-items:center; }}
-            #cesiumContainer {{ flex:1; order:2; min-width:200px; }}
-            #fullscreenBtn {{ padding:4px 8px; font-size:12px; cursor:pointer; }}
+            <style>
+            * {{ box-sizing: border-box; }}
+            html, body {{ height:100%; margin:0; padding:0; font-family: Arial, sans-serif; }}
+            #mainContainer {{ display:flex; height:100%; flex-direction:row; }}
+            
+            /* Left Sidebar - Flight Plan */
+            #flightPlanPanel {{ 
+                flex: 0 0 300px; 
+                width: 300px;
+                border-right: 2px solid #333; 
+                background: #f5f5f5; 
+                display: flex; 
+                flex-direction: column;
+                z-index: 1000;
+            }}
+            #flightPlanHeader {{ 
+                padding: 12px; 
+                background: #333; 
+                color: white; 
+                font-weight: bold; 
+                font-size: 14px;
+            }}
+            #flightPlanToolbar {{
+                padding: 8px;
+                background: #e8e8e8;
+                border-bottom: 1px solid #ccc;
+                display: flex;
+                gap: 4px;
+                flex-wrap: wrap;
+            }}
+            #flightPlanToolbar button {{
+                flex: 1;
+                min-width: 70px;
+                padding: 6px 8px;
+                font-size: 11px;
+                cursor: pointer;
+                background: #007acc;
+                color: white;
+                border: none;
+                border-radius: 2px;
+            }}
+            #flightPlanToolbar button:hover {{ background: #005a9e; }}
+            #flightPlanToolbar button:active {{ background: #004578; }}
+            
+            #waypointsList {{
+                flex: 1;
+                overflow-y: auto;
+                padding: 8px;
+                background: #f5f5f5;
+            }}
+            .waypoint-item {{
+                padding: 8px;
+                margin-bottom: 6px;
+                background: white;
+                border: 1px solid #ddd;
+                border-radius: 3px;
+                cursor: pointer;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }}
+            .waypoint-item:hover {{ background: #e3f2fd; border-color: #007acc; }}
+            .waypoint-item.selected {{ background: #007acc; color: white; border-color: #007acc; }}
+            .waypoint-number {{ font-weight: bold; min-width: 25px; }}
+            .waypoint-coords {{ font-size: 11px; flex: 1; margin: 0 8px; font-family: monospace; }}
+            .waypoint-delete {{ 
+                background: #dc3545; 
+                color: white; 
+                border: none; 
+                padding: 3px 6px; 
+                cursor: pointer; 
+                border-radius: 2px;
+                font-size: 11px;
+            }}
+            .waypoint-delete:hover {{ background: #c82333; }}
+            
+            /* Map Area */
+            #mapArea {{
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+            }}
+            #topToolbar {{
+                padding: 8px;
+                background: #e8e8e8;
+                border-bottom: 1px solid #999;
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+                align-items: center;
+            }}
+            #topToolbar button {{
+                padding: 6px 12px;
+                font-size: 12px;
+                cursor: pointer;
+                background: #007acc;
+                color: white;
+                border: none;
+                border-radius: 2px;
+            }}
+            #topToolbar button:hover {{ background: #005a9e; }}
+            #topToolbar button.active {{ background: #107c10; }}
+            
+            #cesiumContainer {{ 
+                flex:1; 
+                position: relative;
+                width: 100%;
+            }}
+            
             #mainContainer.fullscreen {{ position:fixed; top:0; left:0; width:100vw; height:100vh; z-index:10000; }}
             </style>
         </head>
         <body>
         <div id="mainContainer">
-            <div id="weatherPanel"><div id="kmlPanel"><h3>KML Routes</h3><p style="color: #888;">Upload a KMZ file to display KML lines here.</p></div></div>
-            <div id="controls">
-            <button id="fullscreenBtn" title="Toggle fullscreen">⛶ Fullscreen</button>
-            <button id="startDraw">Start new line</button>
-            <button id="finishDraw">Finish line</button>
-            <button id="clearDrawings">Clear drawings</button>
-            <button id="droneBtn">Trace Drone</button>
-        </div>
-        <div id="cesiumContainer"></div>
+            <!-- Left Sidebar -->
+            <div id="flightPlanPanel">
+                <div id="flightPlanHeader">FLIGHT PLAN</div>
+                <div id="flightPlanToolbar">
+                    <button id="addWaypoint">+ Waypoint</button>
+                    <button id="clearAll">Clear All</button>
+                </div>
+                <div id="waypointsList"></div>
+            </div>
+            
+            <!-- Map Area -->
+            <div id="mapArea">
+                <div id="topToolbar">
+                    <button id="drawMode" title="Click to draw waypoints on map">✏ Draw Mode</button>
+                    <button id="finishDraw" style="display:none;">✓ Finish</button>
+                    <button id="undoBtn">↶ Undo</button>
+                    <button id="fullscreenBtn">⛶ Fullscreen</button>
+                    <button id="droneBtn">▶ Trace Drone</button>
+                </div>
+                <div id="cesiumContainer"></div>
+            </div>
         </div>
         <script>
             let viewer;
@@ -88,12 +198,112 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             const manualCoords = {coords_json};
             const thickness = {thickness};
 
+            // Waypoint management
+            let waypoints = [];
+            let pathEntity = null;
+            let waypointMarkers = [];
+            let drawingMode = false;
+            let selectedWaypoint = -1;
+
             function b64ToUint8Array(b64) {{
                 const binary = atob(b64);
                 const len = binary.length;
                 const bytes = new Uint8Array(len);
                 for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
                 return bytes;
+            }}
+            
+            function updateWaypointsList() {{
+                const list = document.getElementById('waypointsList');
+                list.innerHTML = '';
+                waypoints.forEach((wp, idx) => {{
+                    const item = document.createElement('div');
+                    item.className = 'waypoint-item' + (selectedWaypoint === idx ? ' selected' : '');
+                    item.innerHTML = `
+                        <span class="waypoint-number">${{idx + 1}}.</span>
+                        <span class="waypoint-coords">${{wp.lon.toFixed(4)}, ${{wp.lat.toFixed(4)}}</span>
+                        <button class="waypoint-delete">✕</button>
+                    `;
+                    item.querySelector('.waypoint-delete').addEventListener('click', (e) => {{
+                        e.stopPropagation();
+                        deleteWaypoint(idx);
+                    }});
+                    item.addEventListener('click', () => selectWaypoint(idx));
+                    list.appendChild(item);
+                }});
+            }}
+            
+            function selectWaypoint(idx) {{
+                selectedWaypoint = idx;
+                updateWaypointsList();
+                // Pan to waypoint
+                if (waypoints[idx]) {{
+                    const wp = waypoints[idx];
+                    viewer.camera.flyTo({{
+                        destination: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, 500)
+                    }});
+                }}
+            }}
+            
+            function addWaypoint(lon, lat) {{
+                waypoints.push({{ lon, lat }});
+                updateWaypointsList();
+                updatePath();
+            }}
+            
+            function deleteWaypoint(idx) {{
+                waypoints.splice(idx, 1);
+                if (selectedWaypoint >= waypoints.length) selectedWaypoint = -1;
+                updateWaypointsList();
+                updatePath();
+            }}
+            
+            function clearWaypoints() {{
+                waypoints = [];
+                selectedWaypoint = -1;
+                updateWaypointsList();
+                updatePath();
+            }}
+            
+            function updatePath() {{
+                // Remove old path and markers
+                if (pathEntity) viewer.entities.remove(pathEntity);
+                waypointMarkers.forEach(m => viewer.entities.remove(m));
+                waypointMarkers = [];
+                
+                // Draw path
+                if (waypoints.length >= 2) {{
+                    const positions = waypoints.map(wp => Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, 0));
+                    pathEntity = viewer.entities.add({{
+                        polyline: {{
+                            positions: positions,
+                            width: 3,
+                            material: Cesium.Color.CYAN,
+                            clampToGround: true
+                        }}
+                    }});
+                }}
+                
+                // Draw waypoint markers
+                waypoints.forEach((wp, idx) => {{
+                    const marker = viewer.entities.add({{
+                        position: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat),
+                        point: {{
+                            pixelSize: 10,
+                            color: selectedWaypoint === idx ? Cesium.Color.YELLOW : Cesium.Color.RED,
+                            outlineColor: Cesium.Color.WHITE,
+                            outlineWidth: 2
+                        }},
+                        label: {{
+                            text: (idx + 1).toString(),
+                            font: '12px sans-serif',
+                            fillColor: Cesium.Color.WHITE,
+                            horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+                            verticalOrigin: Cesium.VerticalOrigin.CENTER
+                        }}
+                    }});
+                    waypointMarkers.push(marker);
+                }});
             }}
             
             function displayKMLRoutes(geojson) {{
@@ -121,7 +331,7 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                     if (manualCoords && manualCoords.length) {{
                         groups = [manualCoords];
                     }} else if (kmzBase64 && kmzBase64.length) {{
-                        // send KMZ to backend and use returned geojson/obj
+                        // send KMZ to backend and use returned geojson
                         try {{
                             const blob = new Blob([b64ToUint8Array(kmzBase64)], {{type:'application/vnd.google-earth.kmz'}});
                             const form = new FormData();
@@ -130,120 +340,68 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                             const json = await resp.json();
                             if (json.geojson && json.geojson.coordinates) {{
                                 const coordsRaw = json.geojson.coordinates;
-                                const coordsArr = coordsRaw.map(c=>[c[0],c[1]]);
-                                const flat = [];
-                                coordsArr.forEach(c=>{{ flat.push(c[0]); flat.push(c[1]); }});
-                                groups = [flat];
-                                // display KML routes in side panel
-                                displayKMLRoutes(json.geojson);
-                                // if altitude present, render altitude polyline preview
-                                try {{
-                                    const hasAlt = coordsRaw.length && coordsRaw[0].length >= 3;
-                                    if (hasAlt) {{
-                                        const positions = coordsRaw.map(c=>Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0));
-                                        viewer.entities.add({{ polyline: {{ positions: positions, width:3, material: Cesium.Color.CYAN }} }});
-                                    }}
-                                }} catch(e) {{ console.error('preview polyline failed', e); }}
-                            }}
-                            if (json.obj) {{
-                                // render OBJ altitude polyline
-                                const verts=[];
-                                json.obj.split('\n').forEach(l=>{{
-                                    if (l.startsWith('v ')) {{
-                                        const parts=l.split(/\s+/);
-                                        if (parts.length>=4) verts.push({{lon:parseFloat(parts[1]),lat:parseFloat(parts[2]),alt:parseFloat(parts[3])}});
-                                    }}
+                                // Load waypoints from KMZ file
+                                coordsRaw.forEach(c => {{
+                                    addWaypoint(c[0], c[1]);
                                 }});
-                                if (verts.length>1) {{
-                                    const positions=verts.map(v=>Cesium.Cartesian3.fromDegrees(v.lon,v.lat,v.alt));
-                                    viewer.entities.add({{polyline: {{positions, width:4, material:Cesium.Color.GREEN}}}});
-                                }}
                             }}
-                        }} catch(e) {{ console.error('server parse failed', e); }}
-                    }} // end else-if kmzBase64
-                    let firstEntity = null;
-                    groups.forEach((coordsArr) => {{
-                        const e = viewer.entities.add({{ // braces doubled to escape f-string
-                            corridor: {{ positions: Cesium.Cartesian3.fromDegreesArray(coordsArr), width: thickness, material: Cesium.Color.RED.withAlpha(0.8), height:0, extrudedHeight:5.0 }}
-                        }});
-                        if (!firstEntity) firstEntity = e;
-                    }});
-                    if (firstEntity) viewer.zoomTo(firstEntity);
-
-                    // animate along ALL KML lines, not just the first
-                    groups.forEach((coords) => {{
-                        if (coords.length >= 2) {{
-                            const property = new Cesium.SampledPositionProperty();
-                            for (let i = 0; i < coords.length; i += 2) {{
-                                const lon = coords[i]; const lat = coords[i+1];
-                                const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                                property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
-                            }}
-                            viewer.entities.add({{position: property, point: {{ pixelSize: 8, color: Cesium.Color.BLUE }}}});
-                        }}
-                    }});
-                    // drone tracing support for Streamlit
-                    let droneEntity = null;
-                    document.getElementById('droneBtn').addEventListener('click', () => {{
-                        if (!groups.length) return;
-                        if (droneEntity) {{ viewer.entities.remove(droneEntity); droneEntity = null; return; }}
-                        const coords = groups[0];
-                        const prop = new Cesium.SampledPositionProperty();
-                        for (let i = 0; i < coords.length; i += 2) {{
-                            const lon = coords[i], lat = coords[i+1];
-                            const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), i, new Cesium.JulianDate());
-                            prop.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
-                        }}
-                        droneEntity = viewer.entities.add({{position: prop, point: {{ pixelSize: 12, color: Cesium.Color.YELLOW }}}});
-                        viewer.clock.startTime = Cesium.JulianDate.now();
-                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, coords.length/2, new Cesium.JulianDate());
-                        viewer.clock.currentTime = viewer.clock.startTime;
-                        viewer.clock.multiplier = 1;
-                        viewer.clock.shouldAnimate = true;
-                    }});
-                    // set clock to span the longest path
-                    if (groups.length > 0) {{
-                        const maxLen = Math.max(...groups.map(g => g.length / 2));
-                        viewer.clock.startTime = Cesium.JulianDate.now();
-                        viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, maxLen, new Cesium.JulianDate());
-                        viewer.clock.currentTime = viewer.clock.startTime;
-                        viewer.clock.multiplier = 1;
-                        viewer.clock.shouldAnimate = true;
+                        }} catch(e) {{ console.error('KMZ load failed', e); }}
                     }}
                 }} catch (err) {{ console.error('KMZ parse failed', err); }}
             }})();
 
-            // drawing support
-            let drawing = false;
-            let currentPositions = [];
-            let currentEntity = null;
+            // Drawing mode support
             const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
             handler.setInputAction(function(click) {{
-                if (!drawing) return;
-                const cart = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
-                if (cart) {{
-                    currentPositions.push(cart);
-                    if (!currentEntity) {{
-                        currentEntity = viewer.entities.add({{
-                            polyline: {{
-                                positions: new Cesium.CallbackProperty(function() {{ return currentPositions; }}, false),
-                                width: 4,
-                                material: Cesium.Color.BLUE
-                            }}
-                        }});
-                    }}
+                if (!drawingMode) return;
+                const ellipsoid = viewer.scene.globe.ellipsoid;
+                const cartesian = viewer.camera.pickEllipsoid(click.position, ellipsoid);
+                if (Cesium.defined(cartesian)) {{
+                    const cartographic = ellipsoid.cartesianToCartographic(cartesian);
+                    const lon = Cesium.Math.toDegrees(cartographic.longitude);
+                    const lat = Cesium.Math.toDegrees(cartographic.latitude);
+                    addWaypoint(lon, lat);
                 }}
             }}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-            document.getElementById('startDraw').addEventListener('click', () => {{
-                drawing = true;
-                currentPositions = [];
-                if (currentEntity) {{ viewer.entities.remove(currentEntity); currentEntity = null; }}
+            
+            // Button event listeners
+            document.getElementById('drawMode').addEventListener('click', (e) => {{
+                drawingMode = !drawingMode;
+                e.target.classList.toggle('active');
+                document.getElementById('finishDraw').style.display = drawingMode ? 'block' : 'none';
+                if (!drawingMode) {{
+                    viewer.canvas.style.cursor = 'default';
+                }} else {{
+                    viewer.canvas.style.cursor = 'crosshair';
+                }}
             }});
-            document.getElementById('finishDraw').addEventListener('click', () => {{ drawing = false; }});
-            document.getElementById('clearDrawings').addEventListener('click', () => {{
-                drawing = false;
-                currentPositions = [];
-                if (currentEntity) {{ viewer.entities.remove(currentEntity); currentEntity = null; }}
+            
+            document.getElementById('finishDraw').addEventListener('click', () => {{
+                drawingMode = false;
+                document.getElementById('drawMode').classList.remove('active');
+                document.getElementById('finishDraw').style.display = 'none';
+                viewer.canvas.style.cursor = 'default';
+            }});
+            
+            document.getElementById('undoBtn').addEventListener('click', () => {{
+                if (waypoints.length > 0) {{
+                    waypoints.pop();
+                    updateWaypointsList();
+                    updatePath();
+                }}
+            }});
+            
+            document.getElementById('addWaypoint').addEventListener('click', () => {{
+                drawingMode = !drawingMode;
+                document.getElementById('drawMode').classList.toggle('active');
+                document.getElementById('finishDraw').style.display = drawingMode ? 'block' : 'none';
+                viewer.canvas.style.cursor = drawingMode ? 'crosshair' : 'default';
+            }});
+            
+            document.getElementById('clearAll').addEventListener('click', () => {{
+                if (confirm('Clear all waypoints?')) {{
+                    clearWaypoints();
+                }}
             }});
             
             // Fullscreen toggle
@@ -255,18 +413,62 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
             document.addEventListener('keydown', (e) => {{
                 if (e.key === 'Escape') {{
                     document.getElementById('mainContainer').classList.remove('fullscreen');
+                    document.getElementById('drawMode').classList.remove('active');
+                    drawingMode = false;
                     if (viewer) viewer.forceResize();
                 }}
             }});
-
-            // Drawing support - same as Flask frontend
+            
+            // Drone trace animation
+            let droneEntity = null;
+            document.getElementById('droneBtn').addEventListener('click', () => {{
+                if (waypoints.length < 2) {{
+                    alert('Add at least 2 waypoints to trace drone path');
+                    return;
+                }}
+                if (droneEntity) {{
+                    viewer.entities.remove(droneEntity);
+                    droneEntity = null;
+                    document.getElementById('droneBtn').textContent = '▶ Trace Drone';
+                    return;
+                }}
+                const positions = waypoints.map(wp => Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, 100));
+                const property = new Cesium.SampledPositionProperty();
+                positions.forEach((pos, idx) => {{
+                    const time = Cesium.JulianDate.addSeconds(Cesium.JulianDate.now(), idx * 2, new Cesium.JulianDate());
+                    property.addSample(time, pos);
+                }});
+                droneEntity = viewer.entities.add({{
+                    position: property,
+                    point: {{
+                        pixelSize: 12,
+                        color: Cesium.Color.YELLOW,
+                        outlineColor: Cesium.Color.BLACK,
+                        outlineWidth: 2
+                    }},
+                    label: {{
+                        text: 'DRONE',
+                        font: '10px sans-serif',
+                        fillColor: Cesium.Color.WHITE,
+                        verticalOrigin: Cesium.VerticalOrigin.BOTTOM
+                    }}
+                }});
+                viewer.clock.startTime = Cesium.JulianDate.now();
+                viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, waypoints.length * 2, new Cesium.JulianDate());
+                viewer.clock.currentTime = viewer.clock.startTime;
+                viewer.clock.multiplier = 1;
+                viewer.clock.shouldAnimate = true;
+                document.getElementById('droneBtn').textContent = '⊠ Stop Trace';
+            }});
         </script>
         </body>
         </html>
         """
 
-st.set_page_config(page_title="DroneFlight Planner")
-st.title("DroneFlight Planner — Streamlit")
+st.set_page_config(page_title="Skyphor")
+st.title("Skyphor")
+# small subtitle below the main title
+st.caption("presented by Charlie Brooks")
 
 # allow users to paste raw coordinate pairs if KMZ fails
 coords_text = st.text_area("Or paste lon,lat coordinate pairs (space/newline separated)", "")
