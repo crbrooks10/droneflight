@@ -221,7 +221,7 @@ def _build_cesium_html(kmz_b64: str | None, thickness: float, manual_coords: lis
                     item.className = 'waypoint-item' + (selectedWaypoint === idx ? ' selected' : '');
                     item.innerHTML = `
                         <span class="waypoint-number">${{idx + 1}}.</span>
-                        <span class="waypoint-coords">${{wp.lon.toFixed(4)}, ${{wp.lat.toFixed(4)}}</span>
+                        <span class="waypoint-coords">${{wp.lon.toFixed(4)}}, ${{wp.lat.toFixed(4)}}</span>
                         <button class="waypoint-delete">✕</button>
                     `;
                     item.querySelector('.waypoint-delete').addEventListener('click', (e) => {{
