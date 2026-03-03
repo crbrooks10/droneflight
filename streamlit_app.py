@@ -667,6 +667,9 @@ st.caption("presented by Charlie Brooks")
 
 st.markdown("---")
 
+# Initialize coordinate variable
+coords_geojson: list[list[float]] = []
+
 # Create main layout with sidebar for weather
 main_col, weather_col = st.columns([3, 1])
 
@@ -710,8 +713,6 @@ with main_col:
             placeholder="-87.6298,41.8781\n-87.6350,41.8800",
             height=120,
         )
-
-coords_geojson: list[list[float]] = []
 
 # Parse manual coords
 if coords_text.strip():
