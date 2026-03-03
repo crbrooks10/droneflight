@@ -13,6 +13,14 @@ the flight path and terrain.
 1. **KMZ upload & parsing** – drag’n’drop or file selector for Google Earth
 	KMZ files; routes are extracted and converted to GeoJSON for display.
 2. **3D visualization** – interactive globe/terrain powered by CesiumJS.
+
+   * New: uploaded KMZ routes can now be converted into a simple 3D model
+     (Wavefront OBJ) for offline use or import into modeling tools. The
+     backend exposes a `kmz_to_obj` helper and the path editor can also
+     export any route as OBJ.  
+	By default the OBJ is a polyline; if you supply a small
+	``thickness`` value the code will build a thin ribbon (quad faces)
+	which mesh viewers such as MeshLab will render properly.
 3. **Weather & radar integration** – fetch current and forecast conditions
 	from an external API (OpenWeather, NOAA, etc.) and overlay them on the map.
 4. **Flight‑time recommendations** – simple logic to suggest a departure window
@@ -25,7 +33,7 @@ the flight path and terrain.
 	Streamlit, useful for desktop or spill‑proof demos.
 
 ## Quick start
-
+## Made a new branch
 ```bash
 git clone https://github.com/crbrooks10/droneflight.git
 cd droneflight
@@ -50,3 +58,13 @@ other settings.
 - Static assets (HTML/JS/CSS) are in `static/`; templates use Jinja2.
 - Extend the `get_weather` and `get_radar` functions to tie into real APIs.
 Contributions welcome – file an issue or open a pull request on GitHub.
+
+### Interactive model viewing and drawing
+
+The Flask/Streamlit front end now renders the 3‑D representation of an
+uploaded route directly in the browser using a Cesium corridor primitive.
+There’s no need to download an OBJ just to inspect the flight‑path – the
+width slider allows you to control the thickness of the ribbon.  A simple
+drawing mode lets you add new line segments to the scene by clicking the
+map; use the "Start new line" / "Finish line" buttons or clear drawings
+with the corresponding control.

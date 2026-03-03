@@ -1,13 +1,12 @@
+
+Copy
+
 import json
 import base64
 import zipfile
 import io
 import streamlit as st
 from streamlit.components.v1 import html as components_html
-import requests
-import datetime
-from typing import Dict, List, Optional
-from weather_functions import get_aviation_weather, display_weather_panel
 
 # ---------------------------------------------------------------------------
 # KMZ / KML parsing (self-contained, no external droneflight dependency)
@@ -192,9 +191,6 @@ def _build_cesium_html(coords_geojson: list[list[float]]) -> str:
       <button id="fullscreenBtn">⛶ Fullscreen</button>
       <button id="droneBtn">▶ Trace Drone</button>
       <button id="stopDroneBtn" style="display:none;" class="danger">⊠ Stop</button>
-      <button id="sectionalBtn">🗺 Sectional</button>
-      <button id="terrainBtn">⛰ Terrain</button>
-      <button id="meshSizeBtn">📐 Mesh Size</button>
     </div>
     <div id="cesiumContainer"></div>
     <div id="statusBar" id="statusBar">Ready — enable Draw Mode to add waypoints by clicking the globe.</div>
@@ -207,26 +203,17 @@ let viewer;
 try {{
   Cesium.Ion.defaultAccessToken = '';  // anonymous / no token needed for basic use
   viewer = new Cesium.Viewer('cesiumContainer', {{
-    terrainProvider: new Cesium.CesiumTerrainProvider({{
-      url: Cesium.IonResource.fromAssetId(1),
-      requestVertexNormals: true,
-      requestWaterMask: true
-    }}),
+    terrainProvider: new Cesium.EllipsoidTerrainProvider(),
     animation: false,
     baseLayerPicker: false,
     geocoder: false,
     homeButton: true,
-    sceneModePicker: true,
+    sceneModePicker: false,
     navigationHelpButton: false,
     fullscreenButton: false,
     timeline: false,
   }});
-  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#1a1a2e');  // Solid dark blue background
-  viewer.scene.globe.enableLighting = true;  // Enable terrain lighting
-  
-  // Add terrain controls
-  viewer.scene.globe.depthTestAgainstTerrain = true;
-  
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0d1117');
 }} catch(e) {{
   console.error('Cesium init failed', e);
   document.getElementById('cesiumContainer').innerText = '3D view failed to load.';
@@ -242,9 +229,6 @@ let drawingMode    = false;
 let selectedWp     = -1;
 let droneEntity    = null;
 let droneHandler   = null;
-let sectionalLayer = null;
-let terrainEnabled = true;
-let meshScale      = 1.0;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function setStatus(msg) {{
@@ -369,11 +353,6 @@ if (INITIAL_COORDS && INITIAL_COORDS.length) {{
   setStatus(`Loaded ${{waypoints.length}} waypoints from file.`);
 }}
 
-// Initialize terrain button state
-if (viewer) {{
-  document.getElementById('terrainBtn').classList.add('active');
-}}
-
 // ── Drawing mode ─────────────────────────────────────────────────────────────
 const clickHandler = new Cesium.ScreenSpaceEventHandler(viewer ? viewer.canvas : document.createElement('canvas'));
 clickHandler.setInputAction(click => {{
@@ -460,71 +439,6 @@ function stopDrone() {{
   setStatus('Drone trace stopped.');
 }}
 
-// ── Sectional Chart Toggle ───────────────────────────────────────────────────
-function toggleSectional() {{
-  if (!viewer) return;
-  
-  if (sectionalLayer) {{
-    viewer.imageryLayers.remove(sectionalLayer);
-    sectionalLayer = null;
-    document.getElementById('sectionalBtn').classList.remove('active');
-    setStatus('Sectional chart disabled.');
-  }} else {{
-    // Add a sample imagery layer (in production, use actual sectional charts)
-    sectionalLayer = viewer.imageryLayers.addImageryProvider(
-      new Cesium.OpenStreetMapImageryProvider({{
-        url: 'https://tile.openstreetmap.org/',
-        fileExtension: 'png'
-      }});
-    );
-    sectionalLayer.alpha = 0.7;  // Semi-transparent
-    document.getElementById('sectionalBtn').classList.add('active');
-    setStatus('Sectional chart overlay enabled.');
-  }}
-}}
-
-// ── Terrain Toggle ───────────────────────────────────────────────────────────
-function toggleTerrain() {{
-  if (!viewer) return;
-  
-  terrainEnabled = !terrainEnabled;
-  if (terrainEnabled) {{
-    viewer.terrainProvider = new Cesium.CesiumTerrainProvider({{
-      url: Cesium.IonResource.fromAssetId(1),
-      requestVertexNormals: true,
-      requestWaterMask: true
-    }});
-    document.getElementById('terrainBtn').classList.add('active');
-    setStatus('3D terrain enabled.');
-  }} else {{
-    viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
-    document.getElementById('terrainBtn').classList.remove('active');
-    setStatus('3D terrain disabled.');
-  }}
-}}
-
-// ── Mesh Size Control ───────────────────────────────────────────────────────
-function adjustMeshSize() {{
-  if (!viewer) return;
-  
-  meshScale = meshScale === 1.0 ? 0.5 : (meshScale === 0.5 ? 2.0 : 1.0);
-  
-  // Adjust camera height based on mesh scale
-  const currentRange = viewer.camera.positionCartographic.height;
-  const newRange = currentRange * meshScale;
-  
-  viewer.camera.flyTo({{
-    destination: Cesium.Cartesian3.fromRadians(
-      viewer.camera.positionCartographic.longitude,
-      viewer.camera.positionCartographic.latitude,
-      newRange
-    ),
-    duration: 0.5
-  }});
-  
-  setStatus(`Mesh scale: ${{meshScale}}x`);
-}}
-
 // ── Toolbar buttons ───────────────────────────────────────────────────────────
 document.getElementById('drawModeBtn').addEventListener('click', () => setDrawMode(!drawingMode));
 document.getElementById('finishDrawBtn').addEventListener('click', () => setDrawMode(false));
@@ -551,9 +465,6 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {{
 }});
 document.getElementById('droneBtn').addEventListener('click', startDrone);
 document.getElementById('stopDroneBtn').addEventListener('click', stopDrone);
-document.getElementById('sectionalBtn').addEventListener('click', toggleSectional);
-document.getElementById('terrainBtn').addEventListener('click', toggleTerrain);
-document.getElementById('meshSizeBtn').addEventListener('click', adjustMeshSize);
 document.addEventListener('keydown', e => {{
   if (e.key === 'Escape') {{
     setDrawMode(false);
@@ -576,49 +487,17 @@ st.caption("presented by Charlie Brooks")
 
 st.markdown("---")
 
-# Create main layout with sidebar for weather
-main_col, weather_col = st.columns([3, 1])
+col1, col2 = st.columns([1, 1])
 
-with weather_col:
-    st.markdown("### 🌤️ Weather Panel")
-    
-    # Get center coordinates for weather if available
-    if coords_geojson:
-        # Calculate center point of route
-        center_lat = sum(coord[1] for coord in coords_geojson) / len(coords_geojson)
-        center_lon = sum(coord[0] for coord in coords_geojson) / len(coords_geojson)
-        
-        # Add refresh button
-        if st.button("🔄 Refresh Weather", key="refresh_weather"):
-            with st.spinner("Fetching weather data..."):
-                weather_data = get_aviation_weather(center_lat, center_lon)
-                st.session_state.weather_data = weather_data
-        else:
-            # Get cached weather or fetch new
-            if "weather_data" not in st.session_state:
-                with st.spinner("Fetching weather data..."):
-                    weather_data = get_aviation_weather(center_lat, center_lon)
-                    st.session_state.weather_data = weather_data
-            weather_data = st.session_state.weather_data
-        
-        display_weather_panel(weather_data, center_lat, center_lon)
-    else:
-        st.info("📍 Upload coordinates to see weather data")
+with col1:
+    uploaded = st.file_uploader("📁 Upload KMZ file", type=["kmz"])
 
-with main_col:
-    st.markdown("### 🗺️ Flight Route Visualization")
-    
-    col1, col2 = st.columns([1, 1])
-
-    with col1:
-        uploaded = st.file_uploader("📁 Upload KMZ file", type=["kmz"])
-
-    with col2:
-        coords_text = st.text_area(
-            "Or paste lon,lat pairs (one per line or space-separated)",
-            placeholder="-87.6298,41.8781\n-87.6350,41.8800",
-            height=120,
-        )
+with col2:
+    coords_text = st.text_area(
+        "Or paste lon,lat pairs (one per line or space-separated)",
+        placeholder="-87.6298,41.8781\n-87.6350,41.8800",
+        height=120,
+    )
 
 coords_geojson: list[list[float]] = []
 
@@ -642,7 +521,7 @@ if uploaded is not None:
         raw = uploaded.read()
         geojson = parse_kmz(raw)
         coords_geojson = geojson["coordinates"]
-        st.success(f"✅ KMZ parsed - {len(coords_geojson)} waypoints found.")
+        st.success(f"✅ KMZ parsed — {len(coords_geojson)} waypoints found.")
         with st.expander("GeoJSON preview"):
             st.json(geojson)
     except Exception as e:

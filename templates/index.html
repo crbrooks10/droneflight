@@ -1,82 +1,806 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>DroneFlight Planner</title>
-    <script src="https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Cesium.js"></script>
-    <link href="https://cesium.com/downloads/cesiumjs/releases/1.111/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-    <style>
-        body, html { height: 100%; margin: 0; padding: 0; }
-        #cesiumContainer { width: 100%; height: 90%; display: block; }
-        #controls { padding: 8px; }
-    </style>
+  <meta charset="UTF-8"/>
+  <title>DroneFlight Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <style>
+    :root {
+      --bg:        #080d14;
+      --panel:     #0d1421;
+      --card:      #111d2f;
+      --card2:     #162237;
+      --border:    rgba(255,255,255,0.06);
+      --border-hi: rgba(255,255,255,0.13);
+      --blue:      #3b7ff5;
+      --blue-dim:  rgba(59,127,245,0.1);
+      --blue-ring: rgba(59,127,245,0.22);
+      --teal:      #2dd4bf;
+      --amber:     #fbbf24;
+      --red:       #f87171;
+      --green:     #4ade80;
+      --text:      #dce6f0;
+      --text2:     #7a9ab8;
+      --text3:     #3a5472;
+      --sidebar:   352px;
+      --r:         12px;
+      --rs:        7px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      font-family: 'Syne', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Shell ─────────────────────────────────────────── */
+    #mainContainer { display: flex; height: 100vh; }
+    #mainContainer.fullscreen { position: fixed; inset: 0; z-index: 9999; }
+
+    /* ── Sidebar ───────────────────────────────────────── */
+    #kmlPanel {
+      flex: 0 0 var(--sidebar);
+      display: flex; flex-direction: column;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .sidebar-head {
+      padding: 22px 22px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .brand-icon {
+      width: 42px; height: 42px; flex-shrink: 0;
+      border-radius: 12px;
+      background: linear-gradient(140deg, #1557e8 0%, #0ca6e8 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+      box-shadow: 0 4px 20px rgba(59,127,245,0.45);
+    }
+    .brand-text h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
+    .brand-text p  { font-size: 10.5px; color: var(--text3); margin-top: 4px; letter-spacing: 0.9px; text-transform: uppercase; }
+
+    /* Section wrapper */
+    .sidebar-section {
+      padding: 20px 22px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .sec-label {
+      font-size: 9.5px; font-weight: 700;
+      letter-spacing: 1.1px; text-transform: uppercase;
+      color: var(--text3);
+    }
+
+    /* Drop zone */
+    #dropZone {
+      position: relative;
+      background: var(--card);
+      border: 1.5px dashed var(--border-hi);
+      border-radius: var(--r);
+      padding: 24px 18px 20px;
+      text-align: center; cursor: pointer;
+      transition: border-color .2s, background .2s, box-shadow .2s;
+    }
+    #dropZone:hover, #dropZone.dragover {
+      border-color: var(--blue);
+      background: var(--blue-dim);
+      box-shadow: 0 0 0 4px var(--blue-ring);
+    }
+    #dropZone input[type=file] {
+      position: absolute; inset: 0; opacity: 0;
+      cursor: pointer; width: 100%; height: 100%;
+    }
+    .dz-icon  { font-size: 30px; display: block; margin-bottom: 10px; }
+    .dz-main  { font-size: 13.5px; font-weight: 600; }
+    .dz-sub   { font-size: 11px; color: var(--text3); margin-top: 5px; }
+    .dz-file  {
+      display: none; margin-top: 9px;
+      font-size: 11.5px; font-family: 'IBM Plex Mono', monospace;
+      color: var(--teal); font-weight: 500;
+    }
+
+    /* Textarea */
+    #kmlCoordArea {
+      width: 100%; padding: 11px 13px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 11px; line-height: 1.7; color: var(--text2);
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--rs); resize: vertical; outline: none;
+      transition: border-color .2s;
+    }
+    #kmlCoordArea:focus { border-color: var(--blue); }
+    #kmlCoordArea::placeholder { color: var(--text3); }
+
+    /* Buttons */
+    .sbtn {
+      width: 100%; padding: 10px 16px;
+      font-family: 'Syne', sans-serif; font-size: 12.5px; font-weight: 600;
+      border-radius: var(--rs); cursor: pointer; border: none;
+      display: flex; align-items: center; justify-content: center; gap: 7px;
+      transition: all .15s;
+    }
+    .sbtn-ghost {
+      background: var(--card); color: var(--text2);
+      border: 1px solid var(--border-hi);
+    }
+    .sbtn-ghost:hover { background: var(--card2); color: var(--text); }
+    .sbtn-teal {
+      background: rgba(45,212,191,0.1); color: var(--teal);
+      border: 1px solid rgba(45,212,191,0.22);
+    }
+    .sbtn-teal:hover { background: rgba(45,212,191,0.18); }
+
+    /* Routes list */
+    #kmlRoutesList {
+      flex: 1; overflow-y: auto;
+      padding: 16px 22px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    #kmlRoutesList::-webkit-scrollbar { width: 4px; }
+    #kmlRoutesList::-webkit-scrollbar-thumb { background: var(--card2); border-radius: 4px; }
+
+    .empty-state {
+      padding: 32px 0 0;
+      display: flex; flex-direction: column;
+      align-items: center; text-align: center; gap: 12px;
+      color: var(--text3);
+    }
+    .empty-state .es-icon { font-size: 38px; opacity: .2; }
+    .empty-state p { font-size: 12.5px; line-height: 1.65; max-width: 200px; }
+
+    /* Route cards */
+    .route-card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--r); overflow: hidden; transition: border-color .2s;
+    }
+    .route-card:hover { border-color: var(--border-hi); }
+    .route-card.open  { border-color: var(--blue); }
+
+    .route-card-header {
+      padding: 13px 16px;
+      display: flex; align-items: center; gap: 11px;
+      cursor: pointer; user-select: none;
+    }
+    .rc-dot   { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .rc-name  { flex: 1; font-size: 13.5px; font-weight: 600; }
+    .route-badge {
+      font-size: 10px; font-weight: 600; color: var(--text3);
+      background: var(--card2); padding: 3px 10px; border-radius: 20px;
+    }
+    .rc-chev  { font-size: 13px; color: var(--text3); transition: transform .2s; }
+    .route-card.open .rc-chev { transform: rotate(90deg); }
+
+    .route-card-body {
+      display: none; padding: 4px 16px 14px;
+      border-top: 1px solid var(--border);
+    }
+    .route-card.open .route-card-body { display: block; }
+
+    .route-coords {
+      max-height: 108px; overflow-y: auto; margin: 10px 0 12px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 10px; color: var(--text3); line-height: 1.9;
+    }
+    .route-coords::-webkit-scrollbar { width: 3px; }
+    .route-coords::-webkit-scrollbar-thumb { background: var(--card2); border-radius: 3px; }
+
+    .route-fly-btn {
+      display: none; width: 100%;
+      padding: 9px 14px;
+      font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 600;
+      background: rgba(45,212,191,0.1); color: var(--teal);
+      border: 1px solid rgba(45,212,191,0.2);
+      border-radius: var(--rs); cursor: pointer; transition: background .15s;
+    }
+    .route-card.open .route-fly-btn { display: block; }
+    .route-fly-btn:hover { background: rgba(45,212,191,0.18); }
+
+    /* Status bar */
+    #statusBar {
+      padding: 13px 22px; border-top: 1px solid var(--border);
+      flex-shrink: 0; background: var(--panel);
+      display: flex; align-items: center; gap: 9px; min-height: 46px;
+    }
+    #statusDot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--text3); flex-shrink: 0; transition: background .3s;
+    }
+    #statusDot.ok   { background: var(--green); }
+    #statusDot.err  { background: var(--red); }
+    #statusDot.busy { background: var(--amber); animation: blink 1s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    #statusText { font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* ── Map area ────────────────────────────────────────── */
+    #mapArea { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+    /* Toolbar */
+    #topToolbar {
+      display: flex; align-items: center; height: 54px;
+      padding: 0 16px; gap: 2px;
+      background: var(--panel); border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .tool-group {
+      display: flex; align-items: center; gap: 2px;
+      height: 100%; padding: 0 10px;
+      border-right: 1px solid var(--border);
+    }
+    .tool-group:last-child { border-right: none; }
+    .tg-label {
+      font-size: 9px; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--text3);
+      margin-right: 5px; white-space: nowrap;
+    }
+
+    .tb-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 12px;
+      font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 600;
+      color: var(--text2); background: transparent;
+      border: 1px solid transparent; border-radius: var(--rs);
+      cursor: pointer; white-space: nowrap; transition: all .15s;
+    }
+    .tb-btn:hover { background: var(--card); color: var(--text); border-color: var(--border-hi); }
+    .tb-btn.active {
+      background: rgba(74,222,128,0.1); color: var(--green);
+      border-color: rgba(74,222,128,0.25);
+    }
+    .tb-btn.danger {
+      background: rgba(248,113,113,0.08); color: var(--red);
+      border-color: rgba(248,113,113,0.2);
+    }
+    .tb-btn.danger:hover { background: rgba(248,113,113,0.15); }
+
+    .corr-group {
+      display: flex; align-items: center; gap: 8px;
+      padding-left: 6px;
+    }
+    .corr-group label { font-size: 11px; color: var(--text3); white-space: nowrap; }
+    #widthInput {
+      width: 56px; padding: 6px 8px; text-align: center;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 12px; color: var(--text);
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--rs); outline: none; transition: border-color .2s;
+    }
+    #widthInput:focus { border-color: var(--blue); }
+
+    #cesiumContainer { flex: 1; position: relative; }
+
+    /* hide the old unused obj section if JS tries to touch it */
+    #objSection { display: none; }
+  </style>
 </head>
 <body>
-<div id="controls">
-    <input type="file" id="kmzInput">
-    <button id="uploadBtn">Upload KMZ</button>
+<div id="mainContainer">
+
+  <!-- ══════ SIDEBAR ══════ -->
+  <div id="kmlPanel">
+
+    <div class="sidebar-head">
+      <div class="brand-icon">🛸</div>
+      <div class="brand-text">
+        <h1>DroneFlight</h1>
+        <p>Route Planner</p>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sec-label">Upload Flight Plan</div>
+      <div id="dropZone">
+        <input type="file" id="kmzInput" accept=".kmz,.kml"/>
+        <span class="dz-icon">📂</span>
+        <div class="dz-main">Drop KMZ / KML here</div>
+        <div class="dz-sub">or click to browse files</div>
+        <div class="dz-file" id="dzFile"></div>
+      </div>
+
+      <div class="sec-label">Manual Waypoints</div>
+      <textarea id="kmlCoordArea" rows="3"
+        placeholder="Paste lon,lat pairs&#10;e.g. -122.42,37.77&#10;     -122.41,37.78"></textarea>
+      <button class="sbtn sbtn-ghost" id="loadCoordsBtn">
+        <span>📍</span> Load Coordinates
+      </button>
+    </div>
+
+    <div id="kmlRoutesList">
+      <div class="empty-state">
+        <div class="es-icon">🗺️</div>
+        <p>Upload a KMZ/KML or paste coordinates to see your flight routes here</p>
+      </div>
+    </div>
+
+    <div id="statusBar">
+      <div id="statusDot"></div>
+      <span id="statusText">Ready</span>
+    </div>
+
+  </div>
+
+  <!-- ══════ MAP ══════ -->
+  <div id="mapArea">
+
+    <div id="topToolbar">
+
+      <div class="tool-group">
+        <span class="tg-label">Draw</span>
+        <button class="tb-btn" id="startDrawBtn">✏ Draw</button>
+        <button class="tb-btn" id="finishDrawBtn">✓ Finish</button>
+        <button class="tb-btn" id="clearBtn">✕ Clear</button>
+      </div>
+
+      <div class="tool-group">
+        <span class="tg-label">View</span>
+        <button class="tb-btn" id="fitBtn">⊡ Fit View</button>
+        <button class="tb-btn" id="fullscreenBtn">⛶ Fullscreen</button>
+      </div>
+
+      <div class="tool-group">
+        <span class="tg-label">Drone</span>
+        <button class="tb-btn" id="droneBtn">▶ Simulate</button>
+        <button class="tb-btn danger" id="stopDroneBtn" style="display:none;">⏹ Stop</button>
+      </div>
+
+      <div class="tool-group corr-group">
+        <span class="tg-label">Corridor</span>
+        <label for="widthInput">Width (m)</label>
+        <input type="number" id="widthInput" value="10" min="1" step="1"/>
+        <button class="tb-btn" id="applyWidthBtn">Apply</button>
+      </div>
+
+    </div>
+
+    <div id="cesiumContainer"></div>
+    <!-- stub so old JS doesn't error on objOutput reference -->
+    <div id="objSection"><pre id="objOutput"></pre></div>
+
+  </div>
 </div>
-<div id="cesiumContainer"></div>
+
 <script>
-    const viewer = new Cesium.Viewer('cesiumContainer', {
-        terrainProvider: Cesium.createWorldTerrain()
+// ── Cesium init ───────────────────────────────────────────────────────────
+Cesium.Ion.defaultAccessToken = '';
+const _creditSink = document.createElement('div');
+let viewer;
+try {
+  viewer = new Cesium.Viewer('cesiumContainer', {
+    terrainProvider:      Cesium.EllipsoidTerrainProvider.INSTANCE,
+    animation:            false,
+    baseLayerPicker:      false,
+    geocoder:             false,
+    homeButton:           false,
+    sceneModePicker:      false,
+    navigationHelpButton: false,
+    fullscreenButton:     false,
+    timeline:             false,
+    creditContainer:      _creditSink,
+  });
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#06090f');
+} catch (e) {
+  console.error('Cesium init failed', e);
+  document.getElementById('cesiumContainer').innerHTML =
+    '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#3a5472;font-size:14px;font-family:Syne,sans-serif">3D view failed to load</div>';
+  viewer = null;
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+let currentGroups    = [];
+let corridorEntities = [];
+let polylineEntities = [];
+let pointEntities    = [];
+let drawPolyEnt      = null;
+let drawing          = false;
+let drawPositions    = [];
+let dragIndex        = null;
+let droneEntity      = null;
+let allRouteCoords   = [];
+
+// ── Status ────────────────────────────────────────────────────────────────
+function setStatus(msg) {
+  const dot  = document.getElementById('statusDot');
+  const span = document.getElementById('statusText');
+  span.textContent = msg;
+  if (msg.includes('✅') || msg.includes('route') || msg.includes('waypoint') || msg.includes('Loaded')) {
+    dot.className = 'ok';
+  } else if (msg.includes('❌') || msg.includes('Error') || msg.includes('error') || msg.includes('Need')) {
+    dot.className = 'err';
+  } else if (msg.includes('Loading') || msg.includes('Draw') || msg.includes('running') || msg.includes('placed')) {
+    dot.className = 'busy';
+  } else {
+    dot.className = '';
+  }
+}
+
+// ── KMZ/KML Parsing ───────────────────────────────────────────────────────
+function extractCoordsFromKMLDoc(doc) {
+  var groups = [], ptCoords = [];
+  var coordEls = doc.getElementsByTagNameNS('*', 'coordinates');
+  for (var i = 0; i < coordEls.length; i++) {
+    var group = [];
+    var tokens = coordEls[i].textContent.trim().split(/\s+/);
+    for (var j = 0; j < tokens.length; j++) {
+      var tk = tokens[j].trim(); if (!tk) continue;
+      var parts = tk.split(','); if (parts.length < 2) continue;
+      var lon = parseFloat(parts[0]), lat = parseFloat(parts[1]);
+      var alt = parts.length > 2 ? parseFloat(parts[2]) : 0;
+      if (isFinite(lon) && isFinite(lat)) group.push([lon, lat, isFinite(alt) ? alt : 0]);
+    }
+    if (group.length >= 2) groups.push(group);
+  }
+  var ptEls = doc.getElementsByTagNameNS('*', 'Point');
+  for (var k = 0; k < ptEls.length; k++) {
+    var cEl = ptEls[k].getElementsByTagNameNS('*', 'coordinates')[0]; if (!cEl) continue;
+    var pp = cEl.textContent.trim().split(','); if (pp.length < 2) continue;
+    var plon = parseFloat(pp[0]), plat = parseFloat(pp[1]);
+    var palt = pp.length > 2 ? parseFloat(pp[2]) : 0;
+    if (isFinite(plon) && isFinite(plat)) ptCoords.push([plon, plat, isFinite(palt) ? palt : 0]);
+  }
+  if (ptCoords.length >= 2) groups.push(ptCoords);
+  return groups;
+}
+
+function parseKMLText(kmlText) {
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(kmlText, 'application/xml');
+  if (doc.querySelector('parsererror')) doc = parser.parseFromString(kmlText, 'text/html');
+  return extractCoordsFromKMLDoc(doc);
+}
+
+async function loadKMZOrKML(file) {
+  if (file.name.toLowerCase().endsWith('.kml')) {
+    var groups = parseKMLText(await file.text());
+    if (!groups.length) throw new Error('KML has no LineString, Polygon or Point geometry.');
+    return groups;
+  }
+  if (typeof JSZip === 'undefined') throw new Error('JSZip not loaded — check network.');
+  var zip;
+  try { zip = await JSZip.loadAsync(await file.arrayBuffer()); }
+  catch (e) { throw new Error('Cannot unzip KMZ: ' + e.message); }
+  var entries = Object.values(zip.files).filter(function(f) {
+    return !f.dir && f.name.toLowerCase().endsWith('.kml');
+  });
+  if (!entries.length) throw new Error('No .kml in KMZ. Has: ' + Object.keys(zip.files).join(', '));
+  var allGroups = [];
+  for (var i = 0; i < entries.length; i++) {
+    var text = await entries[i].async('string');
+    var g = parseKMLText(text);
+    console.log('[KMZ] ' + entries[i].name + ' -> ' + g.length + ' route(s)');
+    allGroups = allGroups.concat(g);
+  }
+  if (!allGroups.length) throw new Error('KML inside KMZ has no usable coordinate data.');
+  return allGroups;
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────
+const ROUTE_COLORS = ['#3b7ff5','#2dd4bf','#fbbf24','#f472b6','#a78bfa','#fb923c'];
+
+function clearMap() {
+  if (!viewer) return;
+  corridorEntities.forEach(e => viewer.entities.remove(e));
+  polylineEntities.forEach(e => viewer.entities.remove(e));
+  pointEntities.forEach(e => viewer.entities.remove(e));
+  if (drawPolyEnt) { viewer.entities.remove(drawPolyEnt); drawPolyEnt = null; }
+  corridorEntities = []; polylineEntities = []; pointEntities = [];
+}
+
+function renderGroups(groups) {
+  if (!viewer) return;
+  clearMap();
+  currentGroups = groups;
+  allRouteCoords = [];
+  const width = parseFloat(document.getElementById('widthInput').value) || 10;
+
+  groups.forEach((group, gi) => {
+    allRouteCoords.push(...group);
+    const flat = [];
+    group.forEach(c => { flat.push(c[0]); flat.push(c[1]); });
+    const hex = ROUTE_COLORS[gi % ROUTE_COLORS.length];
+    const cc  = Cesium.Color.fromCssColorString(hex);
+
+    corridorEntities.push(viewer.entities.add({
+      corridor: {
+        positions: Cesium.Cartesian3.fromDegreesArray(flat),
+        width: width, material: cc.withAlpha(0.18),
+        height: 0, extrudedHeight: 4.0,
+      }
+    }));
+
+    polylineEntities.push(viewer.entities.add({
+      polyline: {
+        positions: group.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0)),
+        width: 3,
+        material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.3, taperPower: 1.0, color: cc }),
+        clampToGround: false,
+      }
+    }));
+
+    group.forEach((c, idx) => {
+      pointEntities.push(viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(c[0], c[1], (c[2] || 0) + 10),
+        point: { pixelSize: 7, color: cc, outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+        label: {
+          text: String(idx + 1),
+          font: '11px "IBM Plex Mono", monospace',
+          fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+          pixelOffset: new Cesium.Cartesian2(0, -5),
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          show: group.length <= 50,
+        }
+      }));
     });
+  });
 
-    document.getElementById('uploadBtn').addEventListener('click', () => {
-        const fileInput = document.getElementById('kmzInput');
-        if (!fileInput.files.length) return;
-        const file = fileInput.files[0];
-        const form = new FormData();
-        form.append('file', file);
-        fetch('/upload-kmz', { method: 'POST', body: form })
-            .then(r => r.json())
-            .then(data => {
-                if (data.geojson) {
-                    const coords = data.geojson.coordinates.flat();
-                    const path = viewer.entities.add({
-                        id: 'route',
-                        polyline: {
-                            positions: Cesium.Cartesian3.fromDegreesArray(coords),
-                            width: 3,
-                            material: Cesium.Color.RED
-                        }
-                    });
-                    viewer.zoomTo(path);
+  fitView();
+}
 
-                    // animate a simple point along the route to simulate a drone
-                    const property = new Cesium.SampledPositionProperty();
-                    const total = coords.length / 2; // lon/lat pairs
-                    coords.forEach((v, i) => {
-                        if (i % 2 === 0) {
-                            const lon = v;
-                            const lat = coords[i+1];
-                            const time = Cesium.JulianDate.addSeconds(
-                                viewer.clock.startTime,
-                                i, new Cesium.JulianDate()
-                            );
-                            property.addSample(time, Cesium.Cartesian3.fromDegrees(lon, lat));
-                        }
-                    });
-                    viewer.entities.add({
-                        position: property,
-                        point: { pixelSize: 10, color: Cesium.Color.BLUE },
-                        model: {
-                            uri: 'https://cesium.com/downloads/cesiumjs/releases/1.111/Apps/SampleData/models/CesiumBalloon/CesiumBalloon.glb',
-                            scale: 0.1
-                        }
-                    });
+function fitView() {
+  if (!viewer || !allRouteCoords.length) return;
+  if (allRouteCoords.length === 1) {
+    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(allRouteCoords[0][0], allRouteCoords[0][1], 2000) });
+    return;
+  }
+  const positions = allRouteCoords.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0));
+  const sphere = Cesium.BoundingSphere.fromPoints(positions);
+  const range  = Math.max(sphere.radius * 3, 500);
+  viewer.camera.flyToBoundingSphere(sphere, {
+    duration: 1.5,
+    offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), range)
+  });
+}
 
-                    // set clock range to playback
-                    viewer.clock.startTime = Cesium.JulianDate.now();
-                    viewer.clock.stopTime = Cesium.JulianDate.addSeconds(viewer.clock.startTime, total, new Cesium.JulianDate());
-                    viewer.clock.currentTime = viewer.clock.startTime;
-                    viewer.clock.multiplier = 1; // 1 second per second
-                    viewer.clock.shouldAnimate = true;
-                } else {
-                    alert('Upload failed');
-                }
-            });
+// ── Side panel ────────────────────────────────────────────────────────────
+function buildKMLPanel(groups) {
+  const list = document.getElementById('kmlRoutesList');
+  list.innerHTML = '';
+
+  if (!groups || !groups.length) {
+    list.innerHTML = '<div class="empty-state"><div class="es-icon">🗺️</div><p>Upload a KMZ/KML or paste coordinates to see your flight routes here</p></div>';
+    return;
+  }
+
+  groups.forEach((group, gi) => {
+    const color = ROUTE_COLORS[gi % ROUTE_COLORS.length];
+    const card  = document.createElement('div');
+    card.className = 'route-card';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'route-card-header';
+    hdr.innerHTML = `
+      <span class="rc-dot" style="background:${color}"></span>
+      <span class="rc-name">Route ${gi + 1}</span>
+      <span class="route-badge">${group.length} pts</span>
+      <span class="rc-chev">›</span>`;
+    card.appendChild(hdr);
+
+    const body = document.createElement('div');
+    body.className = 'route-card-body';
+
+    const coords = document.createElement('div');
+    coords.className = 'route-coords';
+    coords.textContent = group.map((c, i) =>
+      `${String(i+1).padStart(3,'0')}  ${c[0].toFixed(5)}, ${c[1].toFixed(5)}${c[2] ? '  ' + c[2].toFixed(0) + 'm' : ''}`
+    ).join('\n');
+    body.appendChild(coords);
+
+    const flyBtn = document.createElement('button');
+    flyBtn.className = 'route-fly-btn';
+    flyBtn.textContent = '📍  Fly to Route';
+    flyBtn.addEventListener('click', () => {
+      if (!viewer) return;
+      const pts = group.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0));
+      const sph = Cesium.BoundingSphere.fromPoints(pts);
+      const rng = Math.max(sph.radius * 3, 500);
+      viewer.camera.flyToBoundingSphere(sph, {
+        duration: 1.2,
+        offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), rng)
+      });
     });
+    body.appendChild(flyBtn);
+    card.appendChild(body);
+
+    hdr.addEventListener('click', () => card.classList.toggle('open'));
+    list.appendChild(card);
+  });
+
+  if (list.firstChild) list.firstChild.classList.add('open');
+}
+
+// ── File upload ───────────────────────────────────────────────────────────
+async function handleFile(file) {
+  setStatus(`Loading ${file.name}…`);
+  try {
+    const groups = await loadKMZOrKML(file);
+    buildKMLPanel(groups);
+    renderGroups(groups);
+    document.getElementById('dzFile').textContent = '✓ ' + file.name;
+    document.getElementById('dzFile').style.display = 'block';
+    setStatus(`✅ ${file.name} — ${groups.length} route(s), ${allRouteCoords.length} waypoints.`);
+  } catch (err) {
+    setStatus(`❌ ${err.message}`);
+    console.error('KMZ/KML error:', err);
+  }
+}
+
+document.getElementById('kmzInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) handleFile(file);
+});
+
+// Drag-and-drop
+const dz = document.getElementById('dropZone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) handleFile(file);
+});
+
+// ── Manual coords ─────────────────────────────────────────────────────────
+document.getElementById('loadCoordsBtn').addEventListener('click', () => {
+  const text = document.getElementById('kmlCoordArea').value.trim();
+  if (!text) return;
+  const group = [];
+  text.replace(/\n/g, ' ').split(/\s+/).forEach(p => {
+    const parts = p.split(',');
+    if (parts.length >= 2) {
+      const lon = parseFloat(parts[0]), lat = parseFloat(parts[1]);
+      const alt = parts[2] !== undefined ? parseFloat(parts[2]) : 0;
+      if (!isNaN(lon) && !isNaN(lat)) group.push([lon, lat, alt]);
+    }
+  });
+  if (group.length < 2) { setStatus('❌ Need at least 2 valid lon,lat pairs.'); return; }
+  buildKMLPanel([group]);
+  renderGroups([group]);
+  setStatus(`✅ Loaded ${group.length} manual waypoints.`);
+});
+
+// ── Draw mode ─────────────────────────────────────────────────────────────
+const drawHandler = new Cesium.ScreenSpaceEventHandler(viewer ? viewer.canvas : document.createElement('canvas'));
+
+drawHandler.setInputAction(click => {
+  if (!drawing || !viewer) return;
+  const cart = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
+  if (!Cesium.defined(cart)) return;
+  drawPositions.push(cart);
+  setStatus(`Draw: ${drawPositions.length} point(s) placed — click Finish when done.`);
+  pointEntities.push(viewer.entities.add({
+    position: cart,
+    point: { pixelSize: 10, color: Cesium.Color.fromCssColorString('#fbbf24'), outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY }
+  }));
+  if (!drawPolyEnt) {
+    drawPolyEnt = viewer.entities.add({
+      polyline: { positions: new Cesium.CallbackProperty(() => drawPositions, false), width: 3, material: Cesium.Color.fromCssColorString('#3b7ff5').withAlpha(0.8) }
+    });
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+drawHandler.setInputAction(mv => {
+  if (dragIndex === null || !viewer) return;
+  const cart = viewer.camera.pickEllipsoid(mv.endPosition, viewer.scene.globe.ellipsoid);
+  if (cart) { drawPositions[dragIndex] = cart; pointEntities[dragIndex].position = cart; }
+}, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+drawHandler.setInputAction(() => { dragIndex = null; }, Cesium.ScreenSpaceEventType.LEFT_UP);
+drawHandler.setInputAction(mv => {
+  if (!viewer) return;
+  const picked = viewer.scene.pick(mv.position);
+  if (Cesium.defined(picked) && pointEntities.includes(picked.id))
+    dragIndex = pointEntities.indexOf(picked.id);
+}, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+
+function setDrawing(on) {
+  drawing = on;
+  document.getElementById('startDrawBtn').classList.toggle('active', on);
+  if (viewer) viewer.canvas.style.cursor = on ? 'crosshair' : 'default';
+  setStatus(on ? 'Draw mode ON — click the globe to place points.' : 'Draw mode OFF.');
+}
+
+document.getElementById('startDrawBtn').addEventListener('click', () => {
+  drawPositions = [];
+  if (drawPolyEnt) { viewer.entities.remove(drawPolyEnt); drawPolyEnt = null; }
+  pointEntities.forEach(p => viewer.entities.remove(p)); pointEntities = [];
+  setDrawing(true);
+});
+
+document.getElementById('finishDrawBtn').addEventListener('click', () => {
+  setDrawing(false);
+  if (drawPositions.length < 2) { setStatus('Need at least 2 points to finish a line.'); return; }
+  const group = drawPositions.map(cart => {
+    const carto = viewer.scene.globe.ellipsoid.cartesianToCartographic(cart);
+    return [Cesium.Math.toDegrees(carto.longitude), Cesium.Math.toDegrees(carto.latitude), 0];
+  });
+  const merged = [...(currentGroups.length ? currentGroups : []), group];
+  buildKMLPanel(merged); renderGroups(merged);
+  setStatus(`✅ Line finished with ${group.length} points.`);
+});
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  drawing = false; drawPositions = []; currentGroups = []; allRouteCoords = [];
+  clearMap();
+  buildKMLPanel([]);
+  document.getElementById('kmzInput').value = '';
+  document.getElementById('dzFile').style.display = 'none';
+  setDrawing(false);
+  setStatus('Cleared all routes and drawings.');
+});
+
+// ── Toolbar ───────────────────────────────────────────────────────────────
+document.getElementById('fitBtn').addEventListener('click', fitView);
+
+document.getElementById('applyWidthBtn').addEventListener('click', () => {
+  if (currentGroups.length) renderGroups(currentGroups);
+});
+
+document.getElementById('fullscreenBtn').addEventListener('click', () => {
+  document.getElementById('mainContainer').classList.toggle('fullscreen');
+  if (viewer) viewer.forceResize();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.getElementById('mainContainer').classList.remove('fullscreen');
+    setDrawing(false);
+    if (viewer) viewer.forceResize();
+  }
+});
+
+// ── Drone trace ───────────────────────────────────────────────────────────
+document.getElementById('droneBtn').addEventListener('click', () => {
+  if (!viewer) return;
+  if (allRouteCoords.length < 2) { setStatus('❌ Load a route first.'); return; }
+  if (droneEntity) stopDrone();
+
+  const start = Cesium.JulianDate.now(), secsEach = 3;
+  const stop  = Cesium.JulianDate.addSeconds(start, allRouteCoords.length * secsEach, new Cesium.JulianDate());
+  const prop  = new Cesium.SampledPositionProperty();
+
+  allRouteCoords.forEach((c, i) => {
+    const t = Cesium.JulianDate.addSeconds(start, i * secsEach, new Cesium.JulianDate());
+    prop.addSample(t, Cesium.Cartesian3.fromDegrees(c[0], c[1], (c[2] || 0) + 80));
+  });
+
+  droneEntity = viewer.entities.add({
+    availability: new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({ start, stop })]),
+    position: prop,
+    point: { pixelSize: 14, color: Cesium.Color.fromCssColorString('#fbbf24'), outlineColor: Cesium.Color.BLACK, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    label: { text: '✈', font: '22px sans-serif', fillColor: Cesium.Color.fromCssColorString('#fbbf24'), verticalOrigin: Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+    path: { show: true, leadTime: 0, trailTime: 30, width: 2, material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.3, taperPower: 1.0, color: Cesium.Color.fromCssColorString('#fbbf24') }) }
+  });
+
+  viewer.clock.startTime = start; viewer.clock.stopTime = stop;
+  viewer.clock.currentTime = start; viewer.clock.multiplier = 1;
+  viewer.clock.shouldAnimate = true; viewer.clock.clockRange = Cesium.ClockRange.LOOP_STOP;
+  viewer.trackedEntity = droneEntity;
+
+  document.getElementById('droneBtn').style.display     = 'none';
+  document.getElementById('stopDroneBtn').style.display = 'inline-flex';
+  setStatus('Drone trace running…');
+});
+
+document.getElementById('stopDroneBtn').addEventListener('click', stopDrone);
+function stopDrone() {
+  if (droneEntity) { viewer.entities.remove(droneEntity); droneEntity = null; }
+  viewer.trackedEntity = undefined;
+  viewer.clock.shouldAnimate = false;
+  document.getElementById('droneBtn').style.display     = 'inline-flex';
+  document.getElementById('stopDroneBtn').style.display = 'none';
+  setStatus('Drone trace stopped.');
+}
 </script>
 </body>
 </html>
