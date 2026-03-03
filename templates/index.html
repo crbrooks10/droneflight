@@ -800,16 +800,6 @@ function stopDrone() {
   document.getElementById('droneBtn').style.display     = 'inline-flex';
   document.getElementById('stopDroneBtn').style.display = 'none';
   setStatus('Drone trace stopped.');
-
-  import streamlit as st
-import pathlib
- 
-st.set_page_config(page_title="DroneFlight Planner", layout="wide")
- 
-html_path = pathlib.Path(__file__).parent / "templates" / "index.html"
-html_content = html_path.read_text(encoding="utf-8")
- 
-st.components.v1.html(html_content, height=800, scrolling=False)
 }
 </script>
 </body>
