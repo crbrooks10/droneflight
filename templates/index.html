@@ -26,7 +26,6 @@
   --text:    #e8edf5;
   --text2:   #6e7d94;
   --text3:   #3a4556;
-  --r:       8px;
   --rs:      5px;
   --sidebar: 320px;
   --panel-r: 340px;
