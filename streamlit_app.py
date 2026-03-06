@@ -1,1126 +1,1748 @@
-import json
-import zipfile
-import io
-import math
-import re
-import streamlit as st
-from streamlit.components.v1 import html as components_html
-
-# ---------------------------------------------------------------------------
-# Phase 1 — Structured KMZ / KML parser
-# Preserves: named segments, per-waypoint altitude, route order
-# ---------------------------------------------------------------------------
-
-def _get_text(el_text: str) -> str:
-    return el_text.strip() if el_text else ""
-
-def _parse_coords_block(block: str) -> list:
-    """Parse a raw <coordinates> text block into [[lon, lat, alt], ...]."""
-    pts = []
-    for token in block.strip().split():
-        token = token.strip()
-        if not token:
-            continue
-        parts = token.split(",")
-        if len(parts) < 2:
-            continue
-        try:
-            lon = float(parts[0])
-            lat = float(parts[1])
-            alt = float(parts[2]) if len(parts) > 2 else 0.0
-            pts.append([lon, lat, alt])
-        except ValueError:
-            pass
-    return pts
-
-
-def _parse_kml_structured(kml_text: str) -> list:
-    """
-    Parse KML and return a list of named segments:
-      [{"name": str, "coords": [[lon, lat, alt], ...]}, ...]
-
-    Handles:
-      - Named Placemarks with LineString / Polygon / MultiGeometry
-      - Point clusters (grouped into one segment if no lines found)
-      - Flat coordinate dumps (single unnamed segment fallback)
-    """
-    segments = []
-
-    # --- Find all Placemarks -------------------------------------------------
-    placemark_blocks = re.findall(
-        r"<Placemark\b[^>]*>(.*?)</Placemark>",
-        kml_text,
-        re.DOTALL | re.IGNORECASE,
-    )
-
-    point_coords = []  # collect stray points
-
-    for i, block in enumerate(placemark_blocks):
-        # Extract name
-        name_match = re.search(r"<n(?:ame)?[^>]*>(.*?)</n(?:ame)?>", block, re.DOTALL | re.IGNORECASE)
-        name = _get_text(name_match.group(1)) if name_match else f"Waypoint {i + 1}"
-        # strip CDATA
-        name = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", name).strip()
-
-        # Gather all coordinate blocks inside this placemark
-        coord_blocks = re.findall(
-            r"<coordinates[^>]*>(.*?)</coordinates>",
-            block,
-            re.DOTALL | re.IGNORECASE,
-        )
-
-        # Detect geometry type to decide how to group
-        has_line = bool(re.search(r"<LineString|<Polygon|<MultiGeometry", block, re.IGNORECASE))
-        has_point = bool(re.search(r"<Point\b", block, re.IGNORECASE))
-
-        for cb in coord_blocks:
-            pts = _parse_coords_block(cb)
-            if not pts:
-                continue
-            if has_point and not has_line and len(pts) == 1:
-                # Single point placemark — collect for grouping
-                point_coords.append({"name": name, "pt": pts[0]})
-            elif pts:
-                segments.append({"name": name, "coords": pts})
-
-    # Group any stray Point placemarks into the segment list as individual entries
-    for pc in point_coords:
-        segments.append({"name": pc["name"], "coords": [pc["pt"]]})
-
-    # --- Fallback: no Placemarks, parse raw coordinate blocks ----------------
-    if not segments:
-        all_blocks = re.findall(
-            r"<coordinates[^>]*>(.*?)</coordinates>",
-            kml_text,
-            re.DOTALL | re.IGNORECASE,
-        )
-        for i, cb in enumerate(all_blocks):
-            pts = _parse_coords_block(cb)
-            if len(pts) >= 1:
-                segments.append({"name": f"Route {i + 1}", "coords": pts})
-
-    return segments
-
-
-def parse_kmz_structured(raw_bytes: bytes) -> list:
-    """
-    Unzip a KMZ and return structured segments from all KML files inside.
-    Returns: [{"name": str, "coords": [[lon, lat, alt], ...]}, ...]
-    """
-    segments = []
-    try:
-        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as z:
-            kml_names = [n for n in z.namelist() if n.lower().endswith(".kml")]
-            if not kml_names:
-                raise ValueError("No .kml files found inside KMZ archive.")
-            for name in kml_names:
-                kml_text = z.read(name).decode("utf-8", errors="replace")
-                segs = _parse_kml_structured(kml_text)
-                segments.extend(segs)
-    except zipfile.BadZipFile:
-        raise ValueError("File is not a valid KMZ/ZIP archive.")
-    except Exception as e:
-        raise ValueError(f"Could not read KMZ: {e}") from e
-
-    if not segments:
-        raise ValueError("No coordinate data found in KMZ file.")
-
-    return segments
-
-
-def parse_kml_file(raw_bytes: bytes) -> list:
-    """Parse a raw KML file and return structured segments."""
-    kml_text = raw_bytes.decode("utf-8", errors="replace")
-    segments = _parse_kml_structured(kml_text)
-    if not segments:
-        raise ValueError("No coordinate data found in KML file.")
-    return segments
-
-
-def segments_to_flat(segments: list) -> list:
-    """Flatten segments back to [[lon, lat, alt], ...] for globe rendering."""
-    flat = []
-    for seg in segments:
-        flat.extend(seg["coords"])
-    return flat
-
-
-def haversine_km(lon1, lat1, lon2, lat2) -> float:
-    """Great-circle distance in km between two lon/lat points."""
-    R = 6371.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
-
-
-def route_stats(segments: list) -> dict:
-    """Compute total distance (km) and waypoint count."""
-    total_km = 0.0
-    total_pts = 0
-    prev = None
-    for seg in segments:
-        for pt in seg["coords"]:
-            total_pts += 1
-            if prev:
-                total_km += haversine_km(prev[0], prev[1], pt[0], pt[1])
-            prev = pt
-    return {"total_km": total_km, "total_pts": total_pts}
-
-
-# ---------------------------------------------------------------------------
-# Phase 2 — Cesium HTML with live editable flight plan panel
-# ---------------------------------------------------------------------------
-
-def _build_cesium_html(segments_json_str: str) -> str:
-    """
-    Build a self-contained Cesium page.
-    segments_json_str: JSON string of [{"name":str, "coords":[[lon,lat,alt],...]}]
-    """
-    return f"""<!DOCTYPE html>
+!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
-  <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
-  <style>
-    :root {{
-      --bg:      #080d14;
-      --panel:   #0d1421;
-      --card:    #111d2f;
-      --card2:   #162237;
-      --border:  rgba(255,255,255,0.07);
-      --bhi:     rgba(255,255,255,0.14);
-      --blue:    #3b7ff5;
-      --teal:    #2dd4bf;
-      --amber:   #fbbf24;
-      --red:     #f87171;
-      --green:   #4ade80;
-      --text:    #dce6f0;
-      --text2:   #7a9ab8;
-      --text3:   #3a5472;
-      --r:       10px;
-      --rs:      6px;
-    }}
-    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    html, body {{
-      height: 100%; font-family: 'Syne', sans-serif;
-      background: var(--bg); color: var(--text); overflow: hidden;
-    }}
+<meta charset="UTF-8"/>
+<title>Skyphor Mission Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+:root {
+  --bg:      #07080c;
+  --s1:      #0e1118;
+  --s2:      #141720;
+  --s3:      #1c2130;
+  --border:  rgba(255,255,255,0.06);
+  --bhi:     rgba(255,255,255,0.12);
+  --green:   #00ff88;
+  --green2:  #00cc66;
+  --amber:   #ffb020;
+  --red:     #ff4455;
+  --blue:    #3b8bff;
+  --cyan:    #00d4ff;
+  --purple:  #9f7aea;
+  --text:    #e8edf5;
+  --text2:   #6e7d94;
+  --text3:   #3a4556;
+  --r:       8px;
+  --rs:      5px;
+  --sidebar: 320px;
+  --panel-r: 340px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;font-family:'Rajdhani',sans-serif;background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}
 
-    /* ── Shell ── */
-    #app {{ display: flex; height: 100vh; }}
-    #app.fullscreen {{ position: fixed; inset: 0; z-index: 9999; }}
+/* ══ SHELL ══ */
+#app{display:flex;flex-direction:column;height:100vh}
+#topbar{
+  flex-shrink:0;height:46px;
+  background:var(--s1);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 14px;gap:8px;
+  z-index:10;
+}
+.tb-logo{
+  display:flex;align-items:center;gap:8px;margin-right:12px;
+  font-size:17px;font-weight:700;letter-spacing:1px;
+}
+.tb-logo .dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.mode-btn{
+  padding:5px 13px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:600;
+  border-radius:var(--rs);border:1px solid var(--border);background:transparent;
+  color:var(--text2);cursor:pointer;transition:all .15s;letter-spacing:.5px;
+}
+.mode-btn:hover{background:var(--s3);color:var(--text);border-color:var(--bhi)}
+.mode-btn.active{background:rgba(0,255,136,.1);color:var(--green);border-color:rgba(0,255,136,.3)}
+.mode-btn.amber{color:var(--amber)}
+.mode-btn.amber.active{background:rgba(255,176,32,.1);color:var(--amber);border-color:rgba(255,176,32,.3)}
+.mode-btn.red{color:var(--red)}
+.mode-btn.red.active{background:rgba(255,68,85,.1);color:var(--red);border-color:rgba(255,68,85,.3)}
+.tb-sep{width:1px;height:22px;background:var(--border);margin:0 4px}
+.tb-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+#statusPill{
+  padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;letter-spacing:.5px;
+  background:rgba(0,255,136,.08);color:var(--green);border:1px solid rgba(0,255,136,.2);
+}
 
-    /* ── Sidebar ── */
-    #sidebar {{
-      flex: 0 0 300px;
-      display: flex; flex-direction: column;
-      background: var(--panel);
-      border-right: 1px solid var(--border);
-      overflow: hidden;
-    }}
+/* ══ BODY ══ */
+#body{flex:1;display:flex;overflow:hidden}
 
-    .sidebar-head {{
-      padding: 16px 18px 14px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }}
-    .brand {{ display: flex; align-items: center; gap: 11px; margin-bottom: 2px; }}
-    .brand-icon {{
-      width: 36px; height: 36px; border-radius: 10px;
-      background: linear-gradient(135deg, #1557e8, #0ca6e8);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 18px; flex-shrink: 0;
-      box-shadow: 0 3px 14px rgba(59,127,245,.4);
-    }}
-    .brand h1 {{ font-size: 15px; font-weight: 700; letter-spacing: -.2px; }}
-    .brand p  {{ font-size: 10px; color: var(--text3); letter-spacing: .7px; text-transform: uppercase; margin-top: 2px; }}
+/* ══ LEFT SIDEBAR ══ */
+#sidebar{
+  flex:0 0 var(--sidebar);
+  display:flex;flex-direction:column;
+  background:var(--s1);border-right:1px solid var(--border);
+  overflow:hidden;z-index:5;
+}
+.sb-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
+.sb-tab{
+  flex:1;padding:10px 0;font-size:12px;font-weight:700;letter-spacing:.8px;
+  text-align:center;text-transform:uppercase;cursor:pointer;
+  color:var(--text3);border-bottom:2px solid transparent;transition:all .15s;
+}
+.sb-tab:hover{color:var(--text2)}
+.sb-tab.active{color:var(--green);border-bottom-color:var(--green)}
 
-    /* Toolbar strip inside sidebar */
-    .sb-toolbar {{
-      display: flex; gap: 5px;
-      padding: 10px 18px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }}
-    .sb-btn {{
-      flex: 1; padding: 7px 6px;
-      font-family: 'Syne', sans-serif; font-size: 11px; font-weight: 600;
-      background: var(--card); color: var(--text2);
-      border: 1px solid var(--border); border-radius: var(--rs);
-      cursor: pointer; transition: all .15s; white-space: nowrap;
-    }}
-    .sb-btn:hover {{ background: var(--card2); color: var(--text); }}
-    .sb-btn.danger {{ color: var(--red); border-color: rgba(248,113,113,.2); }}
-    .sb-btn.danger:hover {{ background: rgba(248,113,113,.1); }}
+.tab-pane{display:none;flex-direction:column;flex:1;overflow:hidden}
+.tab-pane.active{display:flex}
 
-    /* Route info strip */
-    #routeInfo {{
-      padding: 8px 18px;
-      border-bottom: 1px solid var(--border);
-      font-size: 11px; color: var(--text3);
-      display: flex; gap: 16px; flex-shrink: 0;
-    }}
-    #routeInfo span {{ color: var(--text2); font-weight: 600; font-family: 'IBM Plex Mono', monospace; }}
+/* Waypoint list */
+#wpListWrap{flex:1;overflow-y:auto;padding:8px}
+#wpListWrap::-webkit-scrollbar{width:4px}
+#wpListWrap::-webkit-scrollbar-thumb{background:var(--s3);border-radius:4px}
 
-    /* Segments + waypoints list */
-    #flightPlan {{
-      flex: 1; overflow-y: auto;
-      padding: 10px 12px;
-    }}
-    #flightPlan::-webkit-scrollbar {{ width: 4px; }}
-    #flightPlan::-webkit-scrollbar-thumb {{ background: var(--card2); border-radius: 4px; }}
+.empty-state{padding:40px 20px;text-align:center;color:var(--text3)}
+.empty-state .es-icon{font-size:36px;margin-bottom:10px;opacity:.3}
+.empty-state p{font-size:13px;line-height:1.6}
 
-    .empty-hint {{
-      padding: 32px 12px; text-align: center; color: var(--text3);
-    }}
-    .empty-hint .ei {{ font-size: 32px; opacity: .2; margin-bottom: 10px; }}
-    .empty-hint p {{ font-size: 12px; line-height: 1.6; }}
+/* WP row */
+.wp-item{
+  margin-bottom:4px;border-radius:var(--rs);
+  border:1px solid var(--border);overflow:hidden;
+  transition:border-color .15s;
+}
+.wp-item:hover{border-color:var(--bhi)}
+.wp-item.selected{border-color:var(--green)}
+.wp-item.home-item{border-color:rgba(0,212,255,.3)}
 
-    /* Segment group */
-    .seg-group {{ margin-bottom: 10px; }}
-    .seg-header {{
-      display: flex; align-items: center; gap: 8px;
-      padding: 9px 11px; margin-bottom: 4px;
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: var(--r); cursor: pointer; user-select: none;
-      transition: border-color .2s;
-    }}
-    .seg-header:hover {{ border-color: var(--bhi); }}
-    .seg-header.open {{ border-color: var(--blue); }}
-    .seg-dot {{ width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }}
-    .seg-name {{ flex: 1; font-size: 12.5px; font-weight: 600; }}
-    .seg-count {{
-      font-size: 10px; color: var(--text3);
-      background: var(--card2); padding: 2px 8px; border-radius: 20px;
-    }}
-    .seg-chev {{ font-size: 11px; color: var(--text3); transition: transform .2s; }}
-    .seg-header.open .seg-chev {{ transform: rotate(90deg); }}
+.wp-head{
+  display:flex;align-items:center;gap:7px;padding:8px 10px;
+  cursor:pointer;background:var(--s2);user-select:none;
+}
+.wp-num{
+  width:24px;height:24px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;flex-shrink:0;
+}
+.wp-cmd{
+  flex:1;font-size:12px;font-weight:600;letter-spacing:.3px;
+}
+.wp-coords{
+  font-family:'JetBrains Mono',monospace;font-size:9.5px;
+  color:var(--text3);line-height:1.4;
+}
+.wp-del{
+  width:22px;height:22px;border:none;border-radius:4px;
+  background:rgba(255,68,85,.08);color:var(--red);
+  cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;flex-shrink:0;
+}
+.wp-del:hover{background:rgba(255,68,85,.2)}
 
-    .seg-wps {{ display: none; padding-left: 4px; }}
-    .seg-header.open + .seg-wps {{ display: block; }}
+/* WP editor */
+.wp-editor{
+  background:var(--bg);padding:10px;
+  border-top:1px solid var(--border);
+  display:none;
+}
+.wp-item.open .wp-editor{display:block}
+.field-row{display:flex;gap:6px;margin-bottom:7px}
+.field{flex:1}
+.field label{display:block;font-size:9px;font-weight:700;letter-spacing:.8px;color:var(--text3);text-transform:uppercase;margin-bottom:3px}
+.field input,.field select{
+  width:100%;padding:5px 7px;
+  font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text);
+  background:var(--s2);border:1px solid var(--border);border-radius:4px;
+  outline:none;transition:border-color .2s;
+}
+.field input:focus,.field select:focus{border-color:var(--green)}
+.field select option{background:var(--s2)}
+.save-btn{
+  width:100%;padding:7px;font-family:'Rajdhani',sans-serif;font-size:12px;font-weight:700;
+  background:rgba(0,255,136,.1);color:var(--green);
+  border:1px solid rgba(0,255,136,.25);border-radius:var(--rs);
+  cursor:pointer;letter-spacing:.5px;transition:background .15s;
+}
+.save-btn:hover{background:rgba(0,255,136,.18)}
 
-    /* Waypoint row */
-    .wp-row {{
-      display: flex; align-items: center; gap: 6px;
-      padding: 7px 10px; margin-bottom: 3px;
-      background: var(--card); border: 1px solid var(--border);
-      border-radius: var(--rs);
-      transition: border-color .15s;
-      cursor: pointer;
-    }}
-    .wp-row:hover {{ border-color: var(--bhi); }}
-    .wp-row.selected {{ border-color: var(--amber); background: rgba(251,191,36,.05); }}
+/* Stats panel */
+#statsPane{padding:12px;display:flex;flex-direction:column;gap:8px}
+.stat-card{
+  background:var(--s2);border:1px solid var(--border);border-radius:var(--r);
+  padding:12px 14px;
+}
+.stat-card h4{font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text3);margin-bottom:8px}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat-val{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:500;color:var(--text)}
+.stat-unit{font-size:11px;color:var(--text3);margin-top:1px}
+.stat-label{font-size:10px;color:var(--text2);margin-top:2px}
 
-    .wp-num {{
-      width: 22px; height: 22px; border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 10px; font-weight: 700; flex-shrink: 0;
-      color: #000;
-    }}
-    .wp-coords {{
-      flex: 1; font-family: 'IBM Plex Mono', monospace;
-      font-size: 9.5px; line-height: 1.6; color: var(--text2);
-    }}
-    .wp-alt {{
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 9px; color: var(--text3); white-space: nowrap;
-    }}
-    .wp-actions {{ display: flex; gap: 3px; }}
-    .wp-del {{
-      width: 22px; height: 22px; border-radius: 4px;
-      background: rgba(248,113,113,.08); color: var(--red);
-      border: none; cursor: pointer; font-size: 11px;
-      display: flex; align-items: center; justify-content: center;
-      transition: background .15s;
-    }}
-    .wp-del:hover {{ background: rgba(248,113,113,.2); }}
+/* Altitude chart */
+#altChart{width:100%;height:90px;margin-top:4px}
 
-    /* Inline edit row */
-    .wp-edit-row {{
-      padding: 8px 10px; margin-bottom: 3px;
-      background: rgba(59,127,245,.06);
-      border: 1px solid var(--blue); border-radius: var(--rs);
-    }}
-    .wp-edit-row label {{ font-size: 9px; color: var(--text3); display: block; margin-bottom: 3px; letter-spacing: .5px; text-transform: uppercase; }}
-    .wp-edit-inputs {{ display: flex; gap: 5px; margin-bottom: 7px; }}
-    .wp-edit-inputs input {{
-      flex: 1; padding: 5px 7px;
-      font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--text);
-      background: var(--card); border: 1px solid var(--border); border-radius: 4px;
-      outline: none;
-    }}
-    .wp-edit-inputs input:focus {{ border-color: var(--blue); }}
-    .wp-edit-btns {{ display: flex; gap: 5px; }}
-    .wp-save-btn {{
-      flex: 1; padding: 6px; font-size: 11px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      background: rgba(59,127,245,.15); color: var(--blue);
-      border: 1px solid rgba(59,127,245,.3); border-radius: 4px; cursor: pointer;
-    }}
-    .wp-save-btn:hover {{ background: rgba(59,127,245,.25); }}
-    .wp-cancel-btn {{
-      padding: 6px 10px; font-size: 11px; font-weight: 600;
-      font-family: 'Syne', sans-serif;
-      background: var(--card); color: var(--text3);
-      border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
-    }}
+/* LiDAR panel */
+#lidarPane{padding:12px;display:flex;flex-direction:column;gap:10px}
+.lidar-card{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:14px}
+.lidar-card h4{font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text3);margin-bottom:12px}
+.lidar-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.lidar-row label{font-size:12px;color:var(--text2)}
+.lidar-val{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--green);font-weight:500}
+.lidar-toggle{
+  width:100%;padding:9px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;
+  letter-spacing:.5px;border-radius:var(--rs);cursor:pointer;border:none;
+  transition:all .15s;margin-top:4px;
+}
+.lidar-toggle.on{background:rgba(0,255,136,.12);color:var(--green);border:1px solid rgba(0,255,136,.3)}
+.lidar-toggle.off{background:rgba(255,176,32,.08);color:var(--amber);border:1px solid rgba(255,176,32,.25)}
 
-    /* Export button */
-    #exportRow {{
-      padding: 10px 12px;
-      border-top: 1px solid var(--border);
-      flex-shrink: 0;
-    }}
-    .export-btn {{
-      width: 100%; padding: 9px;
-      font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700;
-      background: rgba(45,212,191,.1); color: var(--teal);
-      border: 1px solid rgba(45,212,191,.25); border-radius: var(--rs);
-      cursor: pointer; transition: background .15s;
-    }}
-    .export-btn:hover {{ background: rgba(45,212,191,.18); }}
+/* Status bar */
+#statusBar{
+  flex-shrink:0;padding:7px 12px;border-top:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;background:var(--bg);
+}
+#sDot{width:6px;height:6px;border-radius:50%;background:var(--text3);flex-shrink:0;transition:background .3s}
+#sDot.ok{background:var(--green)}
+#sDot.err{background:var(--red)}
+#sDot.busy{background:var(--amber);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+#sTxt{font-size:11.5px;color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-    /* Status */
-    #statusBar {{
-      padding: 10px 18px; border-top: 1px solid var(--border);
-      font-size: 11.5px; color: var(--text2); background: var(--panel);
-      display: flex; align-items: center; gap: 8px; min-height: 40px; flex-shrink: 0;
-    }}
-    #sDot {{
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--text3); flex-shrink: 0; transition: background .3s;
-    }}
-    #sDot.ok   {{ background: var(--green); }}
-    #sDot.err  {{ background: var(--red); }}
-    #sDot.busy {{ background: var(--amber); animation: blink 1s infinite; }}
-    @keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:.3}} }}
+/* ══ MAP ══ */
+#mapWrap{flex:1;position:relative;display:flex;flex-direction:column;min-width:0}
+#cesiumContainer{flex:1;position:relative}
 
-    /* ── Map area ── */
-    #mapArea {{ flex: 1; display: flex; flex-direction: column; min-width: 0; }}
+/* Floating action buttons on map */
+#mapFab{
+  position:absolute;top:12px;right:12px;z-index:5;
+  display:flex;flex-direction:column;gap:6px;
+}
+.fab{
+  width:38px;height:38px;border-radius:var(--r);
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;cursor:pointer;
+  background:rgba(14,17,24,.9);border:1px solid var(--border);
+  color:var(--text2);transition:all .15s;
+  backdrop-filter:blur(8px);
+}
+.fab:hover{background:var(--s3);color:var(--text);border-color:var(--bhi)}
+.fab.on{background:rgba(0,255,136,.12);color:var(--green);border-color:rgba(0,255,136,.3)}
 
-    #toolbar {{
-      display: flex; align-items: center; height: 50px;
-      padding: 0 14px; gap: 2px;
-      background: var(--panel); border-bottom: 1px solid var(--border);
-      flex-shrink: 0; flex-wrap: wrap;
-    }}
-    .tg {{
-      display: flex; align-items: center; gap: 2px;
-      height: 100%; padding: 0 8px;
-      border-right: 1px solid var(--border);
-    }}
-    .tg:last-child {{ border-right: none; }}
-    .tg-lbl {{
-      font-size: 9px; font-weight: 700; letter-spacing: .8px;
-      text-transform: uppercase; color: var(--text3); margin-right: 4px;
-    }}
-    .tbtn {{
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 6px 11px;
-      font-family: 'Syne', sans-serif; font-size: 11.5px; font-weight: 600;
-      color: var(--text2); background: transparent;
-      border: 1px solid transparent; border-radius: var(--rs);
-      cursor: pointer; white-space: nowrap; transition: all .15s;
-    }}
-    .tbtn:hover {{ background: var(--card); color: var(--text); border-color: var(--bhi); }}
-    .tbtn.on  {{ background: rgba(74,222,128,.1); color: var(--green); border-color: rgba(74,222,128,.25); }}
-    .tbtn.red {{ background: rgba(248,113,113,.08); color: var(--red); border-color: rgba(248,113,113,.2); }}
-    .tbtn.red:hover {{ background: rgba(248,113,113,.15); }}
+/* Coordinate tooltip on hover */
+#coordTooltip{
+  position:absolute;bottom:52px;left:50%;transform:translateX(-50%);
+  background:rgba(14,17,24,.92);border:1px solid var(--border);
+  padding:5px 12px;border-radius:20px;
+  font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text2);
+  pointer-events:none;z-index:10;backdrop-filter:blur(8px);
+  display:none;
+}
 
-    #cesiumContainer {{ flex: 1; position: relative; }}
-  </style>
+/* ══ RIGHT PANEL — Waypoint command palette ══ */
+#rightPanel{
+  flex:0 0 0px;overflow:hidden;
+  background:var(--s1);border-left:1px solid var(--border);
+  transition:flex-basis .2s;display:flex;flex-direction:column;
+}
+#rightPanel.open{flex-basis:var(--panel-r)}
+
+/* Survey wizard */
+#surveyWiz{padding:14px;display:flex;flex-direction:column;gap:10px}
+.wiz-title{font-size:14px;font-weight:700;letter-spacing:.5px;color:var(--amber);margin-bottom:4px}
+.wiz-desc{font-size:12px;color:var(--text2);line-height:1.55}
+.wiz-field{margin-bottom:8px}
+.wiz-field label{display:block;font-size:9px;font-weight:700;letter-spacing:.8px;color:var(--text3);text-transform:uppercase;margin-bottom:4px}
+.wiz-field input,.wiz-field select{
+  width:100%;padding:7px 10px;
+  font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);
+  background:var(--s2);border:1px solid var(--border);border-radius:var(--rs);
+  outline:none;transition:border-color .2s;
+}
+.wiz-field input:focus,.wiz-field select:focus{border-color:var(--amber)}
+.wiz-btn{
+  width:100%;padding:10px;font-family:'Rajdhani',sans-serif;font-size:13px;font-weight:700;
+  letter-spacing:.5px;border-radius:var(--rs);cursor:pointer;border:none;transition:all .15s;
+}
+.wiz-btn.primary{background:rgba(255,176,32,.12);color:var(--amber);border:1px solid rgba(255,176,32,.3)}
+.wiz-btn.primary:hover{background:rgba(255,176,32,.2)}
+.wiz-btn.secondary{background:var(--s2);color:var(--text2);border:1px solid var(--border)}
+.wiz-btn.secondary:hover{background:var(--s3);color:var(--text)}
+
+/* Altitude profile canvas wrapper */
+#altWrap{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-top:4px}
+
+/* ── MAP SEARCH ── */
+#mapSearch{
+  position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  z-index:10;width:340px;max-width:calc(100% - 100px);
+}
+#searchBox{
+  display:flex;align-items:center;gap:0;
+  background:rgba(14,17,24,.93);border:1px solid var(--border);
+  border-radius:24px;padding:0 14px;
+  backdrop-filter:blur(12px);
+  box-shadow:0 4px 24px rgba(0,0,0,.4);
+  transition:border-color .2s;
+}
+#searchBox:focus-within{border-color:rgba(0,255,136,.3)}
+#searchIcon{font-size:14px;margin-right:6px;opacity:.5}
+#searchInput{
+  flex:1;background:transparent;border:none;outline:none;
+  font-family:'Rajdhani',sans-serif;font-size:13.5px;font-weight:500;
+  color:var(--text);padding:10px 0;
+}
+#searchInput::placeholder{color:var(--text3)}
+#searchBtn{
+  background:transparent;border:none;color:var(--green);
+  font-family:'Rajdhani',sans-serif;font-size:11px;font-weight:700;
+  letter-spacing:.8px;cursor:pointer;padding:4px 0;opacity:.7;
+  transition:opacity .15s;
+}
+#searchBtn:hover{opacity:1}
+#searchResults{
+  margin-top:6px;background:rgba(14,17,24,.96);
+  border:1px solid var(--border);border-radius:var(--r);
+  overflow:hidden;display:none;
+  backdrop-filter:blur(12px);
+  box-shadow:0 8px 32px rgba(0,0,0,.5);
+}
+.search-result{
+  padding:10px 16px;cursor:pointer;font-size:13px;
+  border-bottom:1px solid var(--border);transition:background .1s;
+  color:var(--text2);
+}
+.search-result:last-child{border-bottom:none}
+.search-result:hover{background:var(--s3);color:var(--text)}
+.search-result strong{color:var(--text);font-weight:600}
+.search-loading{padding:12px 16px;font-size:12px;color:var(--text3);text-align:center}
+</style>
 </head>
 <body>
 <div id="app">
 
-  <!-- ═══ SIDEBAR ═══ -->
-  <div id="sidebar">
+<!-- ══ TOPBAR ══ -->
+<div id="topbar">
+  <div class="tb-logo">
+    <div class="dot"></div>
+    SKYPHOR
+  </div>
+  <div class="tb-sep"></div>
 
-    <div class="sidebar-head">
-      <div class="brand">
-        <div class="brand-icon">✈</div>
-        <div>
-          <h1>Skyphor</h1>
-          <p>Flight Plan Editor</p>
+  <!-- Mode buttons -->
+  <button class="mode-btn active" id="modeWp"    title="Click map to place waypoints">✚ WAYPOINT</button>
+  <button class="mode-btn"        id="modeSurvey" title="Draw polygon for auto-survey grid">⬡ SURVEY</button>
+  <button class="mode-btn"        id="modeFence"  title="Draw geofence boundary">⬟ GEOFENCE</button>
+  <button class="mode-btn amber"  id="modeHome"   title="Set home / takeoff point">⌂ HOME</button>
+  <div class="tb-sep"></div>
+  <button class="mode-btn"        id="btnSimulate">▶ SIMULATE</button>
+  <button class="mode-btn red"    id="btnStopSim" style="display:none">⏹ STOP</button>
+  <div class="tb-sep"></div>
+  <button class="mode-btn"        id="btnImport">⬆ IMPORT</button>
+  <button class="mode-btn"        id="btnExport">⬇ EXPORT KML</button>
+  <input type="file" id="fileInput" accept=".kml,.kmz" style="display:none">
+
+  <div class="tb-right">
+    <span id="statusPill">READY</span>
+    <button class="mode-btn" id="btnClearAll">✕ CLEAR ALL</button>
+  </div>
+</div>
+
+<!-- ══ BODY ══ -->
+<div id="body">
+
+  <!-- LEFT SIDEBAR -->
+  <div id="sidebar">
+    <div class="sb-tabs">
+      <div class="sb-tab active" data-tab="waypoints">WAYPOINTS</div>
+      <div class="sb-tab" data-tab="stats">STATS</div>
+      <div class="sb-tab" data-tab="lidar">LIDAR</div>
+    </div>
+
+    <!-- TAB: WAYPOINTS -->
+    <div class="tab-pane active" id="tab-waypoints">
+      <div id="wpListWrap">
+        <div class="empty-state" id="wpEmpty">
+          <div class="es-icon">🛸</div>
+          <p>Select a mode above then click the map to begin planning your mission</p>
+        </div>
+        <div id="wpList"></div>
+      </div>
+      <div id="statusBar">
+        <div id="sDot"></div>
+        <span id="sTxt">Ready — select a mode and click the map</span>
+      </div>
+    </div>
+
+    <!-- TAB: STATS -->
+    <div class="tab-pane" id="tab-stats">
+      <div id="statsPane">
+        <div class="stat-card">
+          <h4>Mission Overview</h4>
+          <div class="stat-grid">
+            <div><div class="stat-val" id="statWps">0</div><div class="stat-label">Waypoints</div></div>
+            <div><div class="stat-val" id="statDist">0.0<span class="stat-unit"> km</span></div><div class="stat-label">Distance</div></div>
+            <div><div class="stat-val" id="statTime">0:00<span class="stat-unit"> min</span></div><div class="stat-label">Est. Time</div></div>
+            <div><div class="stat-val" id="statArea">0.0<span class="stat-unit"> ha</span></div><div class="stat-label">Survey Area</div></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <h4>Altitude Profile</h4>
+          <div id="altWrap"><canvas id="altChart"></canvas></div>
+        </div>
+        <div class="stat-card">
+          <h4>Mission Params</h4>
+          <div class="field-row">
+            <div class="field"><label>Default Alt (m)</label><input type="number" id="defaultAlt" value="76" min="1" max="400"></div>
+            <div class="field"><label>Speed (m/s)</label><input type="number" id="defaultSpeed" value="8" min="1" max="30"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>LiDAR Alt (ft)</label><input type="number" id="lidarAlt" value="250" min="50" max="500"></div>
+            <div class="field"><label>Overlap %</label><input type="number" id="overlapPct" value="20" min="0" max="80"></div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="sb-toolbar">
-      <button class="sb-btn" id="drawBtn">✏ Draw</button>
-      <button class="sb-btn" id="finishBtn">✓ Finish</button>
-      <button class="sb-btn" id="undoBtn">↶ Undo</button>
-      <button class="sb-btn danger" id="clearBtn">✕ Clear</button>
-    </div>
-
-    <div id="routeInfo">
-      <div>Waypoints: <span id="wpTotal">0</span></div>
-      <div>Distance: <span id="wpDist">0 km</span></div>
-    </div>
-
-    <div id="flightPlan">
-      <div class="empty-hint">
-        <div class="ei">🗺️</div>
-        <p>Upload a KMZ/KML file or paste coordinates — your flight plan will appear here for editing</p>
+    <!-- TAB: LIDAR -->
+    <div class="tab-pane" id="tab-lidar">
+      <div id="lidarPane">
+        <div class="lidar-card">
+          <h4>LiDAR Coverage at 250ft AGL</h4>
+          <div class="lidar-row"><span class="label">Altitude AGL</span><span class="lidar-val" id="lidar-alt-display">250 ft / 76.2 m</span></div>
+          <div class="lidar-row"><span class="label">Swath Width</span><span class="lidar-val" id="lidar-swath">60.0 m</span></div>
+          <div class="lidar-row"><span class="label">Point Density</span><span class="lidar-val">~50 pts/m²</span></div>
+          <div class="lidar-row"><span class="label">Vertical Accuracy</span><span class="lidar-val">±2 cm</span></div>
+          <div class="lidar-row"><span class="label">Coverage Area</span><span class="lidar-val" id="lidar-coverage">0.0 ha</span></div>
+          <button class="lidar-toggle on" id="lidarToggle">◉ SHOW SWATH COVERAGE</button>
+        </div>
+        <div class="lidar-card">
+          <h4>Sensor Parameters</h4>
+          <div class="lidar-row"><span class="label">Sensor Model</span><span class="lidar-val" style="color:var(--cyan)">VLP-16</span></div>
+          <div class="lidar-row"><span class="label">FOV Horizontal</span><span class="lidar-val">360°</span></div>
+          <div class="lidar-row"><span class="label">FOV Vertical</span><span class="lidar-val">±15° (30°)</span></div>
+          <div class="lidar-row"><span class="label">Scan Rate</span><span class="lidar-val">10-20 Hz</span></div>
+          <div class="lidar-row"><span class="label">Max Range</span><span class="lidar-val">100 m</span></div>
+        </div>
+        <div class="lidar-card">
+          <h4>Coverage Note</h4>
+          <p style="font-size:12px;color:var(--text2);line-height:1.6">
+            Swath footprint modeled as corridor with width = 2 × altitude × tan(15°) ≈ <strong style="color:var(--green)">0.536 × altitude</strong>.
+            At 250ft (76.2m): swath ≈ 40.8m each side = <strong style="color:var(--green)">~81m total</strong> per pass.
+            Green corridor shown on map updates live as waypoints change.
+          </p>
+        </div>
       </div>
     </div>
-
-    <div id="exportRow">
-      <button class="export-btn" id="exportBtn">⬇ Export KMZ</button>
-    </div>
-
-    <div id="statusBar">
-      <div id="sDot"></div>
-      <span id="sTxt">Ready</span>
-    </div>
-
   </div>
 
-  <!-- ═══ MAP ═══ -->
-  <div id="mapArea">
-    <div id="toolbar">
-
-      <div class="tg">
-        <span class="tg-lbl">View</span>
-        <button class="tbtn" id="fitBtn">⊡ Fit</button>
-        <button class="tbtn" id="fsBtn">⛶ Fullscreen</button>
-      </div>
-
-      <div class="tg">
-        <span class="tg-lbl">Drone</span>
-        <button class="tbtn" id="droneBtn">▶ Simulate</button>
-        <button class="tbtn red" id="stopBtn" style="display:none;">⏹ Stop</button>
-      </div>
-
-      <div class="tg">
-        <span class="tg-lbl">Terrain</span>
-        <button class="tbtn" id="terrainBtn">⛰ 3D Terrain</button>
-      </div>
-
-    </div>
+  <!-- MAP AREA -->
+  <div id="mapWrap">
     <div id="cesiumContainer"></div>
+
+    <!-- Search bar -->
+    <div id="mapSearch">
+      <div id="searchBox">
+        <span id="searchIcon">🔍</span>
+        <input type="text" id="searchInput" placeholder="Search location... (e.g. Chicago, IL)" autocomplete="off"/>
+        <button id="searchBtn" title="Search">GO</button>
+      </div>
+      <div id="searchResults"></div>
+    </div>
+
+    <!-- Floating buttons -->
+    <div id="mapFab">
+      <div class="fab" id="fabFit"        title="Fit view to mission">⊡</div>
+      <div class="fab" id="fabTerrain"    title="Toggle 3D terrain">⛰</div>
+      <div class="fab on" id="fabSat"     title="Satellite imagery">🛰</div>
+      <div class="fab" id="fabStreet"     title="Street map">🗺</div>
+      <div class="fab" id="fabTopo"       title="Topographic map">🏔</div>
+      <div class="fab" id="fabFullscreen" title="Fullscreen">⛶</div>
+    </div>
+
+    <!-- Coord tooltip -->
+    <div id="coordTooltip">0.00000, 0.00000</div>
   </div>
 
-</div>
+  <!-- RIGHT PANEL (survey wizard / geofence options) -->
+  <div id="rightPanel">
+    <div id="surveyWiz">
+      <div class="wiz-title">⬡ SURVEY GRID WIZARD</div>
+      <div class="wiz-desc">Click the map to draw a polygon boundary. The wizard will auto-generate parallel flight lines optimized for LiDAR coverage.</div>
+      <div class="wiz-field"><label>Flight Altitude (m)</label><input type="number" id="surveyAlt" value="76" min="10"></div>
+      <div class="wiz-field"><label>Line Spacing (m)</label><input type="number" id="surveySpacing" value="40" min="5" max="500"></div>
+      <div class="wiz-field"><label>Grid Angle (°)</label><input type="number" id="surveyAngle" value="0" min="-90" max="90"></div>
+      <div class="wiz-field"><label>Entry Direction</label>
+        <select id="surveyEntry"><option value="0">West → East</option><option value="1">East → West</option><option value="2">North → South</option><option value="3">South → North</option></select>
+      </div>
+      <div class="wiz-field"><label>Turn Type</label>
+        <select id="surveyTurn"><option value="wp">Waypoint Turn</option><option value="smooth">Smooth Turn</option></select>
+      </div>
+      <button class="wiz-btn primary" id="btnGenGrid">⬡ GENERATE GRID</button>
+      <button class="wiz-btn secondary" id="btnCloseWiz">✕ CANCEL</button>
+    </div>
+  </div>
+
+</div><!-- /body -->
+</div><!-- /app -->
+
 <script>
 'use strict';
 
-// ═══════════════════════════════════════════════════════
-// PHASE 1 DATA — injected from Python structured parser
-// ═══════════════════════════════════════════════════════
-const INITIAL_SEGMENTS = {segments_json_str};
-
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // CESIUM INIT
-// ═══════════════════════════════════════════════════════
-Cesium.Ion.defaultAccessToken = '';
-const _cs = document.createElement('div');
+// ═══════════════════════════════════════════════════════════════
+// Use a public Cesium Ion token — gives access to Cesium World Imagery (Bing satellite)
+// This is the free tier token that ships with all Cesium demos
+Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJlYWE1OWUxNy1mMWZiLTQzYjYtYTQ0OS1kMWFjYmFkNjc5YzciLCJpZCI6NTc3MzMsImlhdCI6MTYyNzg0NTE4Mn0.XcKpgANiY19MC4bdFUXMVEBToBmqS8kuYpUlxJHYZxk';
+const _cred = document.createElement('div');
 let viewer;
-try {{
-  viewer = new Cesium.Viewer('cesiumContainer', {{
-    terrainProvider: Cesium.EllipsoidTerrainProvider.INSTANCE,
-    animation: false, baseLayerPicker: false, geocoder: false,
-    homeButton: false, sceneModePicker: false,
-    navigationHelpButton: false, fullscreenButton: false,
-    timeline: false, creditContainer: _cs,
-  }});
-  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#06090f');
-}} catch (e) {{
-  console.error('Cesium init:', e);
+try {
+  // ── Construct viewer with NO default imagery — we add our own below ──
+  viewer = new Cesium.Viewer('cesiumContainer', {
+    terrainProvider:      Cesium.EllipsoidTerrainProvider.INSTANCE,
+    animation:            false,
+    baseLayerPicker:      false,
+    geocoder:             false,
+    homeButton:           false,
+    sceneModePicker:      false,
+    navigationHelpButton: false,
+    fullscreenButton:     false,
+    timeline:             false,
+    creditContainer:      _cred,
+  });
+
+  // ── Remove default Cesium Ion imagery (prevents token error on empty token) ──
+  viewer.imageryLayers.removeAll();
+
+  // ── Define imagery providers ──
+  // Satellite: Esri World Imagery (no key, reliable, high-res)
+  const provSat = new Cesium.ArcGisMapServerImageryProvider({
+    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer',
+  });
+
+  // Street: OpenStreetMap (built-in Cesium class, handles subdomains correctly)
+  const provStreet = new Cesium.OpenStreetMapImageryProvider({
+    url: 'https://tile.openstreetmap.org/',
+    fileExtension: 'png',
+    credit: 'OpenStreetMap contributors',
+  });
+
+  // Topo: USGS National Map (free, no key, US focus but works globally)
+  const provTopo = new Cesium.ArcGisMapServerImageryProvider({
+    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer',
+  });
+
+  // ── Load satellite by default ──
+  viewer.imageryLayers.addImageryProvider(provSat);
+
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#080c12');
+  viewer.scene.globe.showGroundAtmosphere = true;
+  viewer.scene.globe.enableLighting = false;
+
+  // Store for layer switching
+  window._mapProviders = { sat: provSat, street: provStreet, topo: provTopo };
+  window._activeLayer  = 'sat';
+
+  // Fly to CONUS on load
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(-98.5, 39.5, 4000000),
+    duration: 0,
+  });
+
+} catch(e) {
+  console.error('Cesium init error:', e);
+  document.getElementById('cesiumContainer').innerHTML =
+    '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#3a5472;font-size:15px;font-family:Rajdhani,sans-serif">3D view failed to load — check console</div>';
   viewer = null;
-}}
+}
 
-// ═══════════════════════════════════════════════════════
-// STATE — single source of truth
-// ═══════════════════════════════════════════════════════
-// segments: [{{ name, coords: [[lon,lat,alt],...] }}, ...]
-// editState: {{ segIdx, wpIdx }} | null
-let segments    = [];
-let selectedWp  = null;  // {{ segIdx, wpIdx }}
-let editState   = null;
-let drawingMode = false;
-let pathEntities= [];
-let markerEntities = [];
-let droneEnt    = null;
-let terrainOn   = false;
+// ═══════════════════════════════════════════════════════════════
+// GLOBAL STATE
+// ═══════════════════════════════════════════════════════════════
+const CMD_TYPES = ['WAYPOINT','TAKEOFF','LAND','RTL','LOITER_TURNS','LOITER_TIME','SPLINE_WAYPOINT','CONDITION_DELAY'];
+const CMD_COLORS = {
+  WAYPOINT:       '#3b8bff',
+  TAKEOFF:        '#00ff88',
+  LAND:           '#ff4455',
+  RTL:            '#ff4455',
+  LOITER_TURNS:   '#9f7aea',
+  LOITER_TIME:    '#9f7aea',
+  SPLINE_WAYPOINT:'#00d4ff',
+  CONDITION_DELAY:'#ffb020',
+};
 
-const COLORS = ['#3b7ff5','#2dd4bf','#fbbf24','#f472b6','#a78bfa','#fb923c','#4ade80'];
+let waypoints    = [];  // [{id, cmd, lat, lon, alt, speed, param1, param2, param3}]
+let homePos      = null; // {lat, lon, alt}
+let fencePoints  = [];   // [[lon,lat],...]
+let surveyPoly   = [];   // [[lon,lat],...]
+let activeMode   = 'wp'; // 'wp'|'survey'|'fence'|'home'
+let selectedWpId = null;
+let droneEnt     = null;
+let terrainOn    = false;
+let lidarOn      = true;
+let wpIdCounter  = 0;
 
-// ═══════════════════════════════════════════════════════
-// STATUS
-// ═══════════════════════════════════════════════════════
-function setStatus(msg, type) {{
+// Cesium entities
+let pathEnt      = null;
+let markerEnts   = {};   // id -> entity
+let homeEnt      = null;
+let fenceEnt     = null;
+let surveyPolyEnt= null;
+let surveyLineEnts=[];
+let lidarEnts    = [];
+let lidarCovEnt  = null;
+let surveyGridEnts=[];
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+function uid(){ return ++wpIdCounter; }
+
+function setStatus(msg, type) {
   document.getElementById('sTxt').textContent = msg;
-  const d = document.getElementById('sDot');
-  d.className = type || '';
-}}
+  document.getElementById('sDot').className = type || '';
+  const pill = document.getElementById('statusPill');
+  pill.textContent = type === 'busy' ? 'ACTIVE' : type === 'err' ? 'ERROR' : 'READY';
+  pill.style.color = type === 'busy' ? 'var(--amber)' : type === 'err' ? 'var(--red)' : 'var(--green)';
+  pill.style.background = type === 'busy' ? 'rgba(255,176,32,.08)' : type === 'err' ? 'rgba(255,68,85,.08)' : 'rgba(0,255,136,.08)';
+  pill.style.borderColor = type === 'busy' ? 'rgba(255,176,32,.25)' : type === 'err' ? 'rgba(255,68,85,.25)' : 'rgba(0,255,136,.2)';
+}
 
-// ═══════════════════════════════════════════════════════
-// GLOBE — render / clear
-// ═══════════════════════════════════════════════════════
-function clearGlobe() {{
+function haversineKm(lon1,lat1,lon2,lat2){
+  const R=6371,r=Math.PI/180;
+  const dLat=(lat2-lat1)*r,dLon=(lon2-lon1)*r;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+
+function bearing(lon1,lat1,lon2,lat2){
+  const r=Math.PI/180;
+  const dLon=(lon2-lon1)*r;
+  const y=Math.sin(dLon)*Math.cos(lat2*r);
+  const x=Math.cos(lat1*r)*Math.sin(lat2*r)-Math.sin(lat1*r)*Math.cos(lat2*r)*Math.cos(dLon);
+  return (Math.atan2(y,x)*180/Math.PI+360)%360;
+}
+
+function offsetPoint(lon,lat,distKm,bearingDeg){
+  const R=6371,r=Math.PI/180;
+  const d=distKm/R;
+  const b=bearingDeg*r;
+  const lat1=lat*r, lon1=lon*r;
+  const lat2=Math.asin(Math.sin(lat1)*Math.cos(d)+Math.cos(lat1)*Math.sin(d)*Math.cos(b));
+  const lon2=lon1+Math.atan2(Math.sin(b)*Math.sin(d)*Math.cos(lat1),Math.cos(d)-Math.sin(lat1)*Math.sin(lat2));
+  return [lon2/r, lat2/r];
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LIDAR SWATH MATH
+// lidar_swath_m = 2 * alt_m * tan(15°)  [Velodyne VLP-16 ±15° vertical FOV]
+// ═══════════════════════════════════════════════════════════════
+function lidarSwathM(altFt) {
+  const altM = altFt * 0.3048;
+  // Full swath = 2 sides × alt × tan(FOV/2) -- using 30° half-angle for effective swath
+  return 2 * altM * Math.tan(30 * Math.PI / 180);
+}
+
+function updateLidarDisplay() {
+  const altFt = parseFloat(document.getElementById('lidarAlt').value) || 250;
+  const swath  = lidarSwathM(altFt).toFixed(1);
+  const altM   = (altFt * 0.3048).toFixed(1);
+  document.getElementById('lidar-alt-display').textContent = `${altFt} ft / ${altM} m`;
+  document.getElementById('lidar-swath').textContent = `${swath} m`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// GLOBE RENDERING
+// ═══════════════════════════════════════════════════════════════
+function clearGlobe() {
   if (!viewer) return;
-  [...pathEntities, ...markerEntities].forEach(e => viewer.entities.remove(e));
-  pathEntities = []; markerEntities = [];
-}}
+  if (pathEnt) { viewer.entities.remove(pathEnt); pathEnt = null; }
+  Object.values(markerEnts).forEach(e => viewer.entities.remove(e));
+  markerEnts = {};
+  if (homeEnt) { viewer.entities.remove(homeEnt); homeEnt = null; }
+  clearLidar();
+}
 
-function renderGlobe() {{
+function clearLidar() {
+  if (!viewer) return;
+  lidarEnts.forEach(e => viewer.entities.remove(e));
+  lidarEnts = [];
+  if (lidarCovEnt) { viewer.entities.remove(lidarCovEnt); lidarCovEnt = null; }
+}
+
+function renderGlobe() {
+  if (!viewer) return;
   clearGlobe();
+
+  // ── Flight path polyline ──
+  if (waypoints.length >= 2) {
+    const flightWps = waypoints.filter(w => w.cmd !== 'RTL');
+    const positions = flightWps.map(w => Cesium.Cartesian3.fromDegrees(w.lon, w.lat, w.alt));
+    pathEnt = viewer.entities.add({
+      polyline: {
+        positions,
+        width: 2.5,
+        material: new Cesium.PolylineGlowMaterialProperty({
+          glowPower: 0.2, taperPower: 1.0,
+          color: Cesium.Color.fromCssColorString('#3b8bff')
+        }),
+        clampToGround: false
+      }
+    });
+  }
+
+  // ── Waypoint markers ──
+  waypoints.forEach((wp, idx) => {
+    const isSelected = wp.id === selectedWpId;
+    const color = CMD_COLORS[wp.cmd] || '#3b8bff';
+    const cc = Cesium.Color.fromCssColorString(color);
+
+    const ent = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.alt),
+      point: {
+        pixelSize: isSelected ? 14 : 10,
+        color: isSelected ? Cesium.Color.fromCssColorString('#fbbf24') : cc,
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: isSelected ? 2.5 : 1.5,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: `${idx+1}`,
+        font: '10px "JetBrains Mono", monospace',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        pixelOffset: new Cesium.Cartesian2(0, -6),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        show: waypoints.length <= 100,
+      },
+      // Vertical drop line to ground
+      polyline: {
+        positions: [
+          Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, 0),
+          Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.alt),
+        ],
+        width: 1,
+        material: Cesium.Color.fromCssColorString(color).withAlpha(0.25),
+        clampToGround: false,
+      }
+    });
+    ent._wpId = wp.id;
+    markerEnts[wp.id] = ent;
+  });
+
+  // ── Home marker ──
+  if (homePos) {
+    homeEnt = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(homePos.lon, homePos.lat, homePos.alt || 0),
+      billboard: {
+        image: createHomeIcon(),
+        width: 32, height: 32,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: 'HOME',
+        font: 'bold 10px Rajdhani, sans-serif',
+        fillColor: Cesium.Color.fromCssColorString('#00d4ff'),
+        outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        pixelOffset: new Cesium.Cartesian2(0, -36),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      }
+    });
+  }
+
+  // ── LiDAR swath corridors ──
+  if (lidarOn && waypoints.length >= 2) {
+    renderLidar();
+  }
+
+  renderFence();
+  updateStats();
+  drawAltProfile();
+}
+
+function createHomeIcon() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 32; canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#00d4ff';
+  ctx.beginPath();
+  ctx.moveTo(16, 2);
+  ctx.lineTo(30, 18);
+  ctx.lineTo(24, 18);
+  ctx.lineTo(24, 30);
+  ctx.lineTo(8, 30);
+  ctx.lineTo(8, 18);
+  ctx.lineTo(2, 18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  return canvas.toDataURL();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LIDAR CORRIDOR RENDERING
+// Each flight segment gets a corridor polygon showing swath width
+// Color = semi-transparent green, shows cumulative coverage
+// ═══════════════════════════════════════════════════════════════
+function renderLidar() {
   if (!viewer) return;
+  clearLidar();
 
-  segments.forEach((seg, si) => {{
-    const color = Cesium.Color.fromCssColorString(COLORS[si % COLORS.length]);
+  const altFt   = parseFloat(document.getElementById('lidarAlt').value) || 250;
+  const swathM  = lidarSwathM(altFt);
+  const halfKm  = (swathM / 2) / 1000;
 
-    if (seg.coords.length >= 2) {{
-      const positions = seg.coords.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2] || 0));
-      pathEntities.push(viewer.entities.add({{
-        polyline: {{
-          positions,
-          width: 3,
-          material: new Cesium.PolylineGlowMaterialProperty({{
-            glowPower: 0.25, taperPower: 1.0, color,
-          }}),
-          clampToGround: false,
-        }}
-      }}));
-    }}
+  const flightWps = waypoints.filter(w => w.cmd !== 'RTL' && w.cmd !== 'LAND');
+  if (flightWps.length < 2) return;
 
-    seg.coords.forEach((c, wi) => {{
-      const isSel = selectedWp && selectedWp.segIdx === si && selectedWp.wpIdx === wi;
-      const ent = viewer.entities.add({{
-        position: Cesium.Cartesian3.fromDegrees(c[0], c[1], (c[2] || 0) + 8),
-        point: {{
-          pixelSize: isSel ? 13 : 8,
-          color: isSel ? Cesium.Color.fromCssColorString('#fbbf24') : color,
-          outlineColor: Cesium.Color.WHITE,
-          outlineWidth: isSel ? 2.5 : 1.5,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        }},
-        label: {{
-          text: String(wi + 1),
-          font: '10px "IBM Plex Mono", monospace',
-          fillColor: Cesium.Color.WHITE,
-          outlineColor: Cesium.Color.BLACK, outlineWidth: 2,
-          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-          pixelOffset: new Cesium.Cartesian2(0, -5),
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          show: seg.coords.length <= 80,
-        }},
-      }});
-      // store identity for click detection
-      ent._skyphorSeg = si;
-      ent._skyphorWp  = wi;
-      markerEntities.push(ent);
-    }});
-  }});
-}}
+  // Build one big corridor
+  const positions = flightWps.map(w => Cesium.Cartesian3.fromDegrees(w.lon, w.lat, 0));
+  const corrEnt = viewer.entities.add({
+    corridor: {
+      positions,
+      width: swathM,
+      material: Cesium.Color.fromCssColorString('#00ff88').withAlpha(0.12),
+      height: 0,
+      extrudedHeight: 0,
+      outline: false,
+    }
+  });
+  lidarEnts.push(corrEnt);
 
-// ═══════════════════════════════════════════════════════
-// STATS
-// ═══════════════════════════════════════════════════════
-function haversineKm(lon1, lat1, lon2, lat2) {{
-  const R = 6371, toRad = Math.PI / 180;
-  const dLat = (lat2 - lat1) * toRad, dLon = (lon2 - lon1) * toRad;
-  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*toRad)*Math.cos(lat2*toRad)*Math.sin(dLon/2)**2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}}
+  // Outlined corridor border
+  const borderEnt = viewer.entities.add({
+    corridor: {
+      positions,
+      width: swathM,
+      material: Cesium.Color.fromCssColorString('#00ff88').withAlpha(0.0),
+      outlineColor: Cesium.Color.fromCssColorString('#00ff88').withAlpha(0.4),
+      outlineWidth: 1,
+      height: 0,
+      outline: true,
+    }
+  });
+  lidarEnts.push(borderEnt);
 
-function updateStats() {{
-  let total = 0, dist = 0, prev = null;
-  segments.forEach(seg => {{
-    total += seg.coords.length;
-    seg.coords.forEach(c => {{
-      if (prev) dist += haversineKm(prev[0], prev[1], c[0], c[1]);
-      prev = c;
-    }});
-  }});
-  document.getElementById('wpTotal').textContent = total;
-  document.getElementById('wpDist').textContent  = dist.toFixed(1) + ' km';
-}}
+  // Coverage area stat
+  let totalCovHa = 0;
+  for (let i = 0; i < flightWps.length - 1; i++) {
+    const segKm = haversineKm(flightWps[i].lon, flightWps[i].lat, flightWps[i+1].lon, flightWps[i+1].lat);
+    totalCovHa += (segKm * 1000 * swathM) / 10000;
+  }
+  document.getElementById('lidar-coverage').textContent = totalCovHa.toFixed(2) + ' ha';
+}
 
-// ═══════════════════════════════════════════════════════
-// PHASE 2 — FLIGHT PLAN PANEL
-// ═══════════════════════════════════════════════════════
-function buildPanel() {{
-  const fp = document.getElementById('flightPlan');
-  fp.innerHTML = '';
+// ═══════════════════════════════════════════════════════════════
+// GEOFENCE RENDER
+// ═══════════════════════════════════════════════════════════════
+function renderFence() {
+  if (!viewer) return;
+  if (fenceEnt) { viewer.entities.remove(fenceEnt); fenceEnt = null; }
+  if (fencePoints.length < 3) return;
 
-  if (!segments.length) {{
-    fp.innerHTML = '<div class="empty-hint"><div class="ei">🗺️</div><p>Upload a KMZ/KML file or paste coordinates to edit your flight plan</p></div>';
+  const positions = [...fencePoints, fencePoints[0]].map(p => Cesium.Cartesian3.fromDegrees(p[0], p[1], 0));
+  fenceEnt = viewer.entities.add({
+    polyline: {
+      positions,
+      width: 2,
+      material: Cesium.Color.fromCssColorString('#ff4455').withAlpha(0.7),
+      clampToGround: true,
+    }
+  });
+
+  // Fill
+  viewer.entities.add({
+    polygon: {
+      hierarchy: new Cesium.PolygonHierarchy(fencePoints.map(p => Cesium.Cartesian3.fromDegrees(p[0], p[1], 0))),
+      material: Cesium.Color.fromCssColorString('#ff4455').withAlpha(0.06),
+      height: 0,
+      outline: false,
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SURVEY POLYGON RENDER
+// ═══════════════════════════════════════════════════════════════
+function renderSurveyPoly() {
+  if (!viewer) return;
+  if (surveyPolyEnt) { viewer.entities.remove(surveyPolyEnt); surveyPolyEnt = null; }
+  if (surveyPoly.length < 2) return;
+
+  const pts = surveyPoly.length >= 3
+    ? [...surveyPoly, surveyPoly[0]]
+    : surveyPoly;
+
+  const positions = pts.map(p => Cesium.Cartesian3.fromDegrees(p[0], p[1], 0));
+
+  surveyPolyEnt = viewer.entities.add({
+    polyline: {
+      positions,
+      width: 2,
+      material: Cesium.Color.fromCssColorString('#ffb020').withAlpha(0.8),
+      clampToGround: true,
+    }
+  });
+  if (surveyPoly.length >= 3) {
+    viewer.entities.add({
+      polygon: {
+        hierarchy: new Cesium.PolygonHierarchy(surveyPoly.map(p => Cesium.Cartesian3.fromDegrees(p[0], p[1], 0))),
+        material: Cesium.Color.fromCssColorString('#ffb020').withAlpha(0.1),
+        height: 0,
+      }
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SURVEY GRID GENERATION
+// Lawnmower pattern inside polygon boundary
+// ═══════════════════════════════════════════════════════════════
+function generateSurveyGrid() {
+  if (surveyPoly.length < 3) {
+    setStatus('Draw at least 3 polygon points first.', 'err'); return;
+  }
+
+  const alt     = parseFloat(document.getElementById('surveyAlt').value) || 76;
+  const spacing = parseFloat(document.getElementById('surveySpacing').value) || 40;
+  const angle   = parseFloat(document.getElementById('surveyAngle').value) || 0;
+
+  // Compute bounding box of polygon
+  const lons = surveyPoly.map(p => p[0]);
+  const lats = surveyPoly.map(p => p[1]);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const cLon = (minLon+maxLon)/2, cLat = (minLat+maxLat)/2;
+
+  // Spacing in degrees (approx)
+  const spacingDeg = spacing / 111320;
+
+  // Generate scan lines parallel to angle
+  const newWaypoints = [];
+  const angleRad = angle * Math.PI / 180;
+
+  // Expand bounding box for rotation
+  const diagLat = (maxLat - minLat) * 1.5;
+  const diagLon = (maxLon - minLon) * 1.5;
+
+  const numLines = Math.ceil(diagLat / spacingDeg) + 4;
+  let isForward = true;
+
+  for (let i = 0; i < numLines; i++) {
+    const lat = (minLat - diagLat * 0.25) + i * spacingDeg;
+    // Project line start/end
+    const startLon = minLon - diagLon * 0.25;
+    const endLon   = maxLon + diagLon * 0.25;
+
+    // Rotate around center
+    const rotStart = rotatePoint(startLon, lat, cLon, cLat, angle);
+    const rotEnd   = rotatePoint(endLon, lat, cLon, cLat, angle);
+
+    // Clip to polygon (simplified: just check midpoint)
+    const midLon = (rotStart[0] + rotEnd[0]) / 2;
+    const midLat = (rotStart[1] + rotEnd[1]) / 2;
+    if (!pointInPolygon([midLon, midLat], surveyPoly)) continue;
+
+    // Find actual clipped start/end within polygon
+    const segPts = clipSegmentToPolygon(rotStart, rotEnd, surveyPoly);
+    if (!segPts) continue;
+
+    const [p1, p2] = isForward ? segPts : [segPts[1], segPts[0]];
+
+    newWaypoints.push({ id: uid(), cmd: 'WAYPOINT', lat: p1[1], lon: p1[0], alt, speed: 8, param1: 0, param2: 0, param3: 0 });
+    newWaypoints.push({ id: uid(), cmd: 'WAYPOINT', lat: p2[1], lon: p2[0], alt, speed: 8, param1: 0, param2: 0, param3: 0 });
+
+    isForward = !isForward;
+  }
+
+  if (!newWaypoints.length) {
+    setStatus('No grid lines inside polygon. Try a larger area or smaller spacing.', 'err'); return;
+  }
+
+  // Prepend TAKEOFF if no home
+  if (homePos) {
+    newWaypoints.unshift({ id: uid(), cmd: 'TAKEOFF', lat: homePos.lat, lon: homePos.lon, alt, speed: 4, param1: 0, param2: 0, param3: 0 });
+    newWaypoints.push({ id: uid(), cmd: 'RTL', lat: homePos.lat, lon: homePos.lon, alt: 0, speed: 4, param1: 0, param2: 0, param3: 0 });
+  }
+
+  waypoints = newWaypoints;
+  surveyPoly = [];
+  if (surveyPolyEnt) { viewer.entities.remove(surveyPolyEnt); surveyPolyEnt = null; }
+
+  setMode('wp');
+  renderGlobe();
+  buildWpList();
+  fitView();
+  setStatus(`Survey grid generated: ${newWaypoints.length} waypoints`, 'ok');
+  closeRightPanel();
+}
+
+function rotatePoint(lon, lat, cLon, cLat, angleDeg) {
+  const r = angleDeg * Math.PI / 180;
+  const dx = lon - cLon, dy = lat - cLat;
+  return [
+    cLon + dx * Math.cos(r) - dy * Math.sin(r),
+    cLat + dx * Math.sin(r) + dy * Math.cos(r)
+  ];
+}
+
+function pointInPolygon(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    const intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
+      (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function clipSegmentToPolygon(p1, p2, poly) {
+  // Find intersections of segment p1-p2 with polygon edges
+  const intersections = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i+1) % poly.length];
+    const pt = lineIntersect(p1, p2, a, b);
+    if (pt) intersections.push(pt);
+  }
+  if (intersections.length < 2) {
+    // Check if both endpoints inside
+    if (pointInPolygon(p1, poly) && pointInPolygon(p2, poly)) return [p1, p2];
+    if (intersections.length === 1) {
+      if (pointInPolygon(p1, poly)) return [p1, intersections[0]];
+      if (pointInPolygon(p2, poly)) return [intersections[0], p2];
+    }
+    return null;
+  }
+  // Sort by distance from p1
+  intersections.sort((a, b) => {
+    const da = Math.hypot(a[0]-p1[0], a[1]-p1[1]);
+    const db = Math.hypot(b[0]-p1[0], b[1]-p1[1]);
+    return da - db;
+  });
+  return [intersections[0], intersections[intersections.length-1]];
+}
+
+function lineIntersect(p1, p2, p3, p4) {
+  const d1 = [p2[0]-p1[0], p2[1]-p1[1]];
+  const d2 = [p4[0]-p3[0], p4[1]-p3[1]];
+  const cross = d1[0]*d2[1] - d1[1]*d2[0];
+  if (Math.abs(cross) < 1e-12) return null;
+  const t = ((p3[0]-p1[0])*d2[1] - (p3[1]-p1[1])*d2[0]) / cross;
+  const u = ((p3[0]-p1[0])*d1[1] - (p3[1]-p1[1])*d1[0]) / cross;
+  if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+    return [p1[0] + t*d1[0], p1[1] + t*d1[1]];
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// STATS & ALT PROFILE
+// ═══════════════════════════════════════════════════════════════
+function updateStats() {
+  const n = waypoints.length;
+  let dist = 0;
+  for (let i = 1; i < n; i++) {
+    dist += haversineKm(waypoints[i-1].lon, waypoints[i-1].lat, waypoints[i].lon, waypoints[i].lat);
+  }
+  const speed = parseFloat(document.getElementById('defaultSpeed').value) || 8;
+  const timeMins = dist * 1000 / speed / 60;
+
+  document.getElementById('statWps').textContent  = n;
+  document.getElementById('statDist').innerHTML   = dist.toFixed(2) + '<span class="stat-unit"> km</span>';
+  document.getElementById('statTime').innerHTML   = timeMins.toFixed(1) + '<span class="stat-unit"> min</span>';
+}
+
+function drawAltProfile() {
+  const canvas = document.getElementById('altChart');
+  if (!canvas) return;
+  const ctx    = canvas.getContext('2d');
+  const dpr    = window.devicePixelRatio || 1;
+  const w      = canvas.parentElement.clientWidth - 20;
+  const h      = 80;
+  canvas.width  = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width  = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.scale(dpr, dpr);
+
+  ctx.clearRect(0, 0, w, h);
+  if (waypoints.length < 2) {
+    ctx.fillStyle = '#3a4556';
+    ctx.font = '11px Rajdhani, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No waypoints yet', w/2, h/2);
     return;
-  }}
+  }
 
-  segments.forEach((seg, si) => {{
-    const color = COLORS[si % COLORS.length];
-    const group = document.createElement('div');
-    group.className = 'seg-group';
-    group.dataset.si = si;
+  const alts = waypoints.map(wp => wp.alt);
+  const minA = Math.min(0, ...alts), maxA = Math.max(...alts, 10);
+  const range = maxA - minA || 1;
 
-    // Segment header
-    const hdr = document.createElement('div');
-    hdr.className = 'seg-header open';
-    hdr.innerHTML = `
-      <span class="seg-dot" style="background:${{color}}"></span>
-      <span class="seg-name">${{escHtml(seg.name)}}</span>
-      <span class="seg-count">${{seg.coords.length}} pts</span>
-      <span class="seg-chev">›</span>`;
-    hdr.addEventListener('click', () => {{
-      hdr.classList.toggle('open');
-      wpsDiv.style.display = hdr.classList.contains('open') ? 'block' : 'none';
-    }});
-    group.appendChild(hdr);
+  // Compute cumulative distances for x-axis
+  const dists = [0];
+  for (let i = 1; i < waypoints.length; i++) {
+    dists.push(dists[i-1] + haversineKm(waypoints[i-1].lon, waypoints[i-1].lat, waypoints[i].lon, waypoints[i].lat));
+  }
+  const totalDist = dists[dists.length - 1] || 1;
 
-    // Waypoints container
-    const wpsDiv = document.createElement('div');
-    wpsDiv.className = 'seg-wps';
-    wpsDiv.style.display = 'block';
+  const xPad = 4, yPad = 8;
+  const cw = w - xPad*2, ch = h - yPad*2;
 
-    seg.coords.forEach((c, wi) => {{
-      wpsDiv.appendChild(makeWpRow(si, wi, c, color));
-    }});
+  const toX = d => xPad + (d / totalDist) * cw;
+  const toY = a => yPad + ch - ((a - minA) / range) * ch;
 
-    group.appendChild(wpsDiv);
-    fp.appendChild(group);
-  }});
+  // Fill under line
+  ctx.beginPath();
+  ctx.moveTo(toX(0), h - yPad);
+  waypoints.forEach((wp, i) => ctx.lineTo(toX(dists[i]), toY(wp.alt)));
+  ctx.lineTo(toX(totalDist), h - yPad);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(0,255,136,0.08)';
+  ctx.fill();
 
-  updateStats();
-}}
+  // Line
+  ctx.beginPath();
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth = 1.5;
+  waypoints.forEach((wp, i) => {
+    i === 0 ? ctx.moveTo(toX(dists[i]), toY(wp.alt)) : ctx.lineTo(toX(dists[i]), toY(wp.alt));
+  });
+  ctx.stroke();
 
-function escHtml(s) {{
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}}
+  // Dots
+  waypoints.forEach((wp, i) => {
+    const color = CMD_COLORS[wp.cmd] || '#3b8bff';
+    ctx.beginPath();
+    ctx.arc(toX(dists[i]), toY(wp.alt), 3, 0, Math.PI*2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  });
+}
 
-function makeWpRow(si, wi, c, color) {{
-  // If this waypoint is in edit mode, render the edit form instead
-  if (editState && editState.segIdx === si && editState.wpIdx === wi) {{
-    return makeEditRow(si, wi, c);
-  }}
+// ═══════════════════════════════════════════════════════════════
+// WAYPOINT LIST PANEL
+// ═══════════════════════════════════════════════════════════════
+function buildWpList() {
+  const list  = document.getElementById('wpList');
+  const empty = document.getElementById('wpEmpty');
+  list.innerHTML = '';
 
-  const isSel = selectedWp && selectedWp.segIdx === si && selectedWp.wpIdx === wi;
-  const div = document.createElement('div');
-  div.className = 'wp-row' + (isSel ? ' selected' : '');
+  if (!waypoints.length && !homePos) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
 
-  const altM = c[2] ? c[2].toFixed(0) + 'm' : '0m';
-  const altFt = c[2] ? (c[2] * 3.28084).toFixed(0) + 'ft' : '0ft';
+  // Home row (always first if set)
+  if (homePos) {
+    const hRow = document.createElement('div');
+    hRow.className = 'wp-item home-item';
+    hRow.innerHTML = `
+      <div class="wp-head">
+        <span class="wp-num" style="background:#00d4ff;color:#000">H</span>
+        <span class="wp-cmd" style="color:var(--cyan)">HOME / TAKEOFF</span>
+        <span class="wp-coords">${homePos.lat.toFixed(5)}<br>${homePos.lon.toFixed(5)}</span>
+      </div>`;
+    list.appendChild(hRow);
+  }
 
-  div.innerHTML = `
-    <span class="wp-num" style="background:${{color}}">${{wi + 1}}</span>
-    <span class="wp-coords">${{c[0].toFixed(5)}}<br>${{c[1].toFixed(5)}}</span>
-    <span class="wp-alt">${{altFt}}<br>${{altM}}</span>
-    <span class="wp-actions">
-      <button class="wp-del" title="Edit waypoint">✎</button>
-      <button class="wp-del" title="Delete waypoint" style="color:var(--red)">✕</button>
-    </span>`;
+  waypoints.forEach((wp, idx) => {
+    const isOpen  = wp.id === selectedWpId;
+    const color   = CMD_COLORS[wp.cmd] || '#3b8bff';
+    const item    = document.createElement('div');
+    item.className = 'wp-item' + (isOpen ? ' open selected' : '');
+    item.dataset.id = wp.id;
 
-  // Click row to fly there and select
-  div.addEventListener('click', (e) => {{
-    if (e.target.closest('.wp-actions')) return;
-    selectWp(si, wi);
-  }});
+    item.innerHTML = `
+      <div class="wp-head">
+        <span class="wp-num" style="background:${color};color:#000">${idx+1}</span>
+        <div style="flex:1">
+          <div class="wp-cmd" style="color:${color}">${wp.cmd}</div>
+          <div class="wp-coords">${wp.lat.toFixed(5)}, ${wp.lon.toFixed(5)} &nbsp;|&nbsp; ${wp.alt}m</div>
+        </div>
+        <button class="wp-del" data-id="${wp.id}" title="Delete">✕</button>
+      </div>
+      <div class="wp-editor">
+        <div class="field-row">
+          <div class="field">
+            <label>Command</label>
+            <select class="field-cmd" data-id="${wp.id}">
+              ${CMD_TYPES.map(c => `<option${c===wp.cmd?' selected':''}>${c}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Speed m/s</label><input class="field-speed" type="number" min="1" max="30" value="${wp.speed}" data-id="${wp.id}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Latitude</label><input class="field-lat" type="number" step="0.00001" value="${wp.lat.toFixed(6)}" data-id="${wp.id}"></div>
+          <div class="field"><label>Longitude</label><input class="field-lon" type="number" step="0.00001" value="${wp.lon.toFixed(6)}" data-id="${wp.id}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label>Altitude (m)</label><input class="field-alt" type="number" min="0" max="400" value="${wp.alt}" data-id="${wp.id}"></div>
+          <div class="field"><label>Loiter Rad (m)</label><input class="field-p1" type="number" value="${wp.param1||0}" data-id="${wp.id}"></div>
+        </div>
+        <button class="save-btn" data-id="${wp.id}">✓ SAVE WAYPOINT</button>
+      </div>`;
 
-  const btns = div.querySelectorAll('.wp-del');
-  // Edit button
-  btns[0].addEventListener('click', (e) => {{
-    e.stopPropagation();
-    editState = {{ segIdx: si, wpIdx: wi }};
-    buildPanel();
-  }});
-  // Delete button
-  btns[1].addEventListener('click', (e) => {{
-    e.stopPropagation();
-    deleteWp(si, wi);
-  }});
+    // Toggle open on header click
+    item.querySelector('.wp-head').addEventListener('click', (e) => {
+      if (e.target.closest('.wp-del')) return;
+      selectedWpId = (selectedWpId === wp.id) ? null : wp.id;
+      buildWpList();
+      renderGlobe();
+      if (selectedWpId && viewer) {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.alt + 500),
+          duration: 0.8,
+        });
+      }
+    });
 
-  return div;
-}}
+    // Delete
+    item.querySelector('.wp-del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      waypoints = waypoints.filter(w => w.id !== wp.id);
+      if (selectedWpId === wp.id) selectedWpId = null;
+      buildWpList();
+      renderGlobe();
+      setStatus(`Deleted WP ${idx+1}`, 'ok');
+    });
 
-function makeEditRow(si, wi, c) {{
-  const div = document.createElement('div');
-  div.className = 'wp-edit-row';
-  div.innerHTML = `
-    <label>Longitude / Latitude / Altitude (m)</label>
-    <div class="wp-edit-inputs">
-      <input id="elon" type="number" step="0.00001" value="${{c[0].toFixed(5)}}" placeholder="Lon"/>
-      <input id="elat" type="number" step="0.00001" value="${{c[1].toFixed(5)}}" placeholder="Lat"/>
-      <input id="ealt" type="number" step="1"       value="${{(c[2]||0).toFixed(0)}}" placeholder="Alt (m)"/>
-    </div>
-    <div class="wp-edit-btns">
-      <button class="wp-save-btn" id="eSave">Save</button>
-      <button class="wp-cancel-btn" id="eCancel">Cancel</button>
-    </div>`;
+    // Save
+    item.querySelector('.save-btn').addEventListener('click', () => {
+      const id = wp.id;
+      const w  = waypoints.find(x => x.id === id);
+      if (!w) return;
+      w.cmd    = item.querySelector('.field-cmd').value;
+      w.lat    = parseFloat(item.querySelector('.field-lat').value) || w.lat;
+      w.lon    = parseFloat(item.querySelector('.field-lon').value) || w.lon;
+      w.alt    = parseFloat(item.querySelector('.field-alt').value) || w.alt;
+      w.speed  = parseFloat(item.querySelector('.field-speed').value) || w.speed;
+      w.param1 = parseFloat(item.querySelector('.field-p1').value) || 0;
+      selectedWpId = null;
+      buildWpList();
+      renderGlobe();
+      setStatus(`WP ${idx+1} updated`, 'ok');
+    });
 
-  div.querySelector('#eSave').addEventListener('click', () => {{
-    const lon = parseFloat(div.querySelector('#elon').value);
-    const lat = parseFloat(div.querySelector('#elat').value);
-    const alt = parseFloat(div.querySelector('#ealt').value) || 0;
-    if (!isFinite(lon) || !isFinite(lat)) {{
-      setStatus('Invalid coordinates — check values.', 'err'); return;
-    }}
-    segments[si].coords[wi] = [lon, lat, alt];
-    editState = null;
-    updateAll('Waypoint updated.');
-  }});
-  div.querySelector('#eCancel').addEventListener('click', () => {{
-    editState = null;
-    buildPanel();
-  }});
+    list.appendChild(item);
+  });
+}
 
-  return div;
-}}
+// ═══════════════════════════════════════════════════════════════
+// MODE MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+function setMode(mode) {
+  activeMode = mode;
+  ['modeWp','modeSurvey','modeFence','modeHome'].forEach(id => {
+    document.getElementById(id).classList.remove('active');
+  });
+  const modeMap = { wp:'modeWp', survey:'modeSurvey', fence:'modeFence', home:'modeHome' };
+  if (modeMap[mode]) document.getElementById(modeMap[mode]).classList.add('active');
 
-function selectWp(si, wi) {{
-  selectedWp = {{ segIdx: si, wpIdx: wi }};
-  buildPanel();
-  renderGlobe();
-  if (viewer) {{
-    const c = segments[si].coords[wi];
-    viewer.camera.flyTo({{
-      destination: Cesium.Cartesian3.fromDegrees(c[0], c[1], 800),
-      duration: 1.0,
-    }});
-  }}
-}}
+  if (viewer) viewer.canvas.style.cursor = (mode !== 'wp' || mode === 'survey' || mode === 'fence') ? 'crosshair' : 'default';
 
-function deleteWp(si, wi) {{
-  segments[si].coords.splice(wi, 1);
-  // Remove empty segments
-  if (segments[si].coords.length === 0) segments.splice(si, 1);
-  if (selectedWp && (selectedWp.segIdx === si && selectedWp.wpIdx >= segments[si]?.coords.length || selectedWp.segIdx > si)) {{
-    selectedWp = null;
-  }}
-  updateAll('Waypoint deleted.');
-}}
+  const modeLabels = {
+    wp:     'WAYPOINT mode — click globe to place waypoints',
+    survey: 'SURVEY mode — click to draw polygon boundary',
+    fence:  'GEOFENCE mode — click to draw boundary polygon',
+    home:   'HOME mode — click to set home / takeoff point',
+  };
+  setStatus(modeLabels[mode] || 'Ready', 'busy');
 
-function updateAll(msg) {{
-  buildPanel();
-  renderGlobe();
-  updateStats();
-  if (msg) setStatus(msg, 'ok');
-}}
+  // Show survey wizard
+  if (mode === 'survey') {
+    document.getElementById('rightPanel').classList.add('open');
+  }
+}
 
-// ═══════════════════════════════════════════════════════
-// LOAD INITIAL DATA
-// ═══════════════════════════════════════════════════════
-function loadSegments(segs) {{
-  segments = segs.map(s => ({{
-    name:   s.name   || 'Route',
-    coords: (s.coords || []).map(c => [
-      parseFloat(c[0]) || 0,
-      parseFloat(c[1]) || 0,
-      parseFloat(c[2]) || 0,
-    ])
-  }}));
-  selectedWp = null; editState = null;
-  updateAll();
+function closeRightPanel() {
+  document.getElementById('rightPanel').classList.remove('open');
+}
 
-  // Fly to first point
-  if (viewer && segments.length && segments[0].coords.length) {{
-    const all = segments.flatMap(s => s.coords);
-    const positions = all.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2]||0));
-    if (positions.length === 1) {{
-      viewer.camera.flyTo({{ destination: Cesium.Cartesian3.fromDegrees(all[0][0], all[0][1], 2000) }});
-    }} else {{
-      const sphere = Cesium.BoundingSphere.fromPoints(positions);
-      const range  = Math.max(sphere.radius * 3, 500);
-      viewer.camera.flyToBoundingSphere(sphere, {{
-        duration: 1.5,
-        offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), range),
-      }});
-    }}
-  }}
-}}
-
-if (INITIAL_SEGMENTS && INITIAL_SEGMENTS.length) {{
-  loadSegments(INITIAL_SEGMENTS);
-  const total = INITIAL_SEGMENTS.reduce((n, s) => n + (s.coords || []).length, 0);
-  setStatus(`Loaded ${{INITIAL_SEGMENTS.length}} segment(s), ${{total}} waypoints.`, 'ok');
-}} else {{
-  buildPanel();
-  setStatus('Ready — upload a KMZ/KML or draw waypoints.', '');
-}}
-
-// ═══════════════════════════════════════════════════════
-// GLOBE CLICK — select marker
-// ═══════════════════════════════════════════════════════
-if (viewer) {{
+// ═══════════════════════════════════════════════════════════════
+// MAP CLICK HANDLER
+// ═══════════════════════════════════════════════════════════════
+if (viewer) {
   const handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
 
-  // Left click — draw or select
-  handler.setInputAction((click) => {{
-    if (drawingMode) {{
-      const cart = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
-      if (!Cesium.defined(cart)) return;
+  handler.setInputAction((click) => {
+    const cart = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid);
+    if (!Cesium.defined(cart)) return;
+    const carto = viewer.scene.globe.ellipsoid.cartesianToCartographic(cart);
+    const lon = Cesium.Math.toDegrees(carto.longitude);
+    const lat = Cesium.Math.toDegrees(carto.latitude);
+
+    if (activeMode === 'home') {
+      homePos = { lat, lon, alt: 0 };
+      setMode('wp');
+      renderGlobe();
+      buildWpList();
+      setStatus(`Home set at ${lat.toFixed(5)}, ${lon.toFixed(5)}`, 'ok');
+      return;
+    }
+
+    if (activeMode === 'fence') {
+      fencePoints.push([lon, lat]);
+      renderFence();
+      setStatus(`Fence: ${fencePoints.length} point(s) — double-click to close`, 'busy');
+      return;
+    }
+
+    if (activeMode === 'survey') {
+      surveyPoly.push([lon, lat]);
+      renderSurveyPoly();
+      setStatus(`Survey polygon: ${surveyPoly.length} point(s) — use Generate Grid when ready`, 'busy');
+      return;
+    }
+
+    // Try to pick existing marker
+    const picked = viewer.scene.pick(click.position);
+    if (Cesium.defined(picked) && picked.id && picked.id._wpId !== undefined) {
+      selectedWpId = picked.id._wpId;
+      buildWpList();
+      renderGlobe();
+      // Scroll to wp in list
+      const item = document.querySelector(`.wp-item[data-id="${selectedWpId}"]`);
+      if (item) item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+
+    // Place new waypoint
+    if (activeMode === 'wp') {
+      const defAlt   = parseFloat(document.getElementById('defaultAlt').value) || 76;
+      const defSpeed = parseFloat(document.getElementById('defaultSpeed').value) || 8;
+
+      // First WP = TAKEOFF if we have a home
+      const cmd = (!waypoints.length && homePos) ? 'TAKEOFF' : 'WAYPOINT';
+      waypoints.push({ id: uid(), cmd, lat, lon, alt: defAlt, speed: defSpeed, param1: 0, param2: 0, param3: 0 });
+
+      buildWpList();
+      renderGlobe();
+      setStatus(`WP ${waypoints.length} placed at ${lat.toFixed(5)}, ${lon.toFixed(5)}`, 'ok');
+    }
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  // Double-click to close fence/survey polygon
+  handler.setInputAction(() => {
+    if (activeMode === 'fence' && fencePoints.length >= 3) {
+      renderFence();
+      setMode('wp');
+      setStatus(`Geofence closed with ${fencePoints.length} points`, 'ok');
+    }
+    if (activeMode === 'survey' && surveyPoly.length >= 3) {
+      renderSurveyPoly();
+      setStatus('Survey polygon ready — click Generate Grid', 'ok');
+    }
+  }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+  // Coordinate tooltip on mouse move
+  handler.setInputAction((move) => {
+    const cart = viewer.camera.pickEllipsoid(move.endPosition, viewer.scene.globe.ellipsoid);
+    const tt = document.getElementById('coordTooltip');
+    if (Cesium.defined(cart)) {
       const carto = viewer.scene.globe.ellipsoid.cartesianToCartographic(cart);
       const lon = Cesium.Math.toDegrees(carto.longitude);
       const lat = Cesium.Math.toDegrees(carto.latitude);
-      // Add to last segment or create new one
-      if (!segments.length) segments.push({{ name: 'Route 1', coords: [] }});
-      segments[segments.length - 1].coords.push([lon, lat, 0]);
-      updateAll(`Placed waypoint at ${{lon.toFixed(5)}}, ${{lat.toFixed(5)}}`);
-    }} else {{
-      // Try to pick a marker entity
-      const picked = viewer.scene.pick(click.position);
-      if (Cesium.defined(picked) && picked.id && picked.id._skyphorSeg !== undefined) {{
-        selectWp(picked.id._skyphorSeg, picked.id._skyphorWp);
-      }}
-    }}
-  }}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-}}
+      tt.textContent = `${lat.toFixed(5)}° N, ${lon.toFixed(5)}° E`;
+      tt.style.display = 'block';
+    } else {
+      tt.style.display = 'none';
+    }
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+}
 
-// ═══════════════════════════════════════════════════════
-// SIDEBAR TOOLBAR
-// ═══════════════════════════════════════════════════════
-function setDraw(on) {{
-  drawingMode = on;
-  document.getElementById('drawBtn').classList.toggle('on', on);
-  if (viewer) viewer.canvas.style.cursor = on ? 'crosshair' : 'default';
-  setStatus(on ? 'Draw mode — click globe to place waypoints.' : 'Ready', on ? 'busy' : '');
-}}
-
-document.getElementById('drawBtn').addEventListener('click', () => {{
-  if (!drawingMode && !segments.length) {{
-    segments.push({{ name: 'Route 1', coords: [] }});
-  }} else if (!drawingMode) {{
-    segments.push({{ name: `Route ${{segments.length + 1}}`, coords: [] }});
-  }}
-  setDraw(!drawingMode);
-}});
-document.getElementById('finishBtn').addEventListener('click', () => setDraw(false));
-document.getElementById('undoBtn').addEventListener('click', () => {{
-  // Remove last waypoint from last non-empty segment
-  for (let i = segments.length - 1; i >= 0; i--) {{
-    if (segments[i].coords.length) {{
-      segments[i].coords.pop();
-      if (segments[i].coords.length === 0) segments.splice(i, 1);
-      updateAll('Last waypoint removed.');
-      return;
-    }}
-  }}
-}});
-document.getElementById('clearBtn').addEventListener('click', () => {{
-  if (!confirm('Clear all waypoints?')) return;
-  segments = []; selectedWp = null; editState = null;
-  updateAll('Cleared.');
-  setStatus('Ready', '');
-}});
-
-// ═══════════════════════════════════════════════════════
-// MAP TOOLBAR
-// ═══════════════════════════════════════════════════════
-document.getElementById('fitBtn').addEventListener('click', () => {{
-  if (!viewer) return;
-  const all = segments.flatMap(s => s.coords);
-  if (!all.length) return;
-  const positions = all.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1], c[2]||0));
-  const sphere = Cesium.BoundingSphere.fromPoints(positions);
-  viewer.camera.flyToBoundingSphere(sphere, {{
-    duration: 1.5,
-    offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), Math.max(sphere.radius*3, 500)),
-  }});
-}});
-
-document.getElementById('fsBtn').addEventListener('click', () => {{
-  document.getElementById('app').classList.toggle('fullscreen');
-  if (viewer) viewer.forceResize();
-}});
-document.addEventListener('keydown', e => {{
-  if (e.key === 'Escape') {{
-    document.getElementById('app').classList.remove('fullscreen');
-    setDraw(false);
-    if (viewer) viewer.forceResize();
-  }}
-}});
-
-// Terrain toggle
-document.getElementById('terrainBtn').addEventListener('click', () => {{
-  if (!viewer) return;
-  terrainOn = !terrainOn;
-  if (terrainOn) {{
-    viewer.terrainProvider = new Cesium.CesiumTerrainProvider({{
-      url: Cesium.IonResource.fromAssetId(1),
-    }});
-    viewer.scene.globe.enableLighting = true;
-    viewer.scene.globe.depthTestAgainstTerrain = true;
-    document.getElementById('terrainBtn').classList.add('on');
-    setStatus('3D terrain enabled.', 'ok');
-  }} else {{
-    viewer.terrainProvider = Cesium.EllipsoidTerrainProvider.INSTANCE;
-    viewer.scene.globe.enableLighting = false;
-    viewer.scene.globe.depthTestAgainstTerrain = false;
-    document.getElementById('terrainBtn').classList.remove('on');
-    setStatus('Flat terrain.', '');
-  }}
-}});
-
-// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
 // DRONE SIMULATION
-// ═══════════════════════════════════════════════════════
-document.getElementById('droneBtn').addEventListener('click', () => {{
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btnSimulate').addEventListener('click', () => {
   if (!viewer) return;
-  const all = segments.flatMap(s => s.coords);
-  if (all.length < 2) {{ setStatus('Need at least 2 waypoints to simulate.', 'err'); return; }}
-  if (droneEnt) stopDrone();
+  if (waypoints.length < 2) { setStatus('Need at least 2 waypoints to simulate.', 'err'); return; }
+  if (droneEnt) stopSim();
 
-  const start = Cesium.JulianDate.now(), secs = 3;
-  const stop  = Cesium.JulianDate.addSeconds(start, all.length * secs, new Cesium.JulianDate());
+  const start = Cesium.JulianDate.now(), secsPerWp = 4;
+  const stop  = Cesium.JulianDate.addSeconds(start, waypoints.length * secsPerWp, new Cesium.JulianDate());
   const prop  = new Cesium.SampledPositionProperty();
-  all.forEach((c, i) => {{
-    const t = Cesium.JulianDate.addSeconds(start, i * secs, new Cesium.JulianDate());
-    prop.addSample(t, Cesium.Cartesian3.fromDegrees(c[0], c[1], (c[2]||0) + 80));
-  }});
-  droneEnt = viewer.entities.add({{
-    availability: new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({{start,stop}})]),
+  waypoints.forEach((wp, i) => {
+    const t = Cesium.JulianDate.addSeconds(start, i * secsPerWp, new Cesium.JulianDate());
+    prop.addSample(t, Cesium.Cartesian3.fromDegrees(wp.lon, wp.lat, wp.alt + 2));
+  });
+
+  droneEnt = viewer.entities.add({
+    availability: new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({start, stop})]),
     position: prop,
-    point: {{ pixelSize:14, color:Cesium.Color.fromCssColorString('#fbbf24'), outlineColor:Cesium.Color.BLACK, outlineWidth:2, disableDepthTestDistance:Number.POSITIVE_INFINITY }},
-    label: {{ text:'✈', font:'20px sans-serif', fillColor:Cesium.Color.fromCssColorString('#fbbf24'), verticalOrigin:Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance:Number.POSITIVE_INFINITY }},
-    path: {{ show:true, leadTime:0, trailTime:40, width:2, material:new Cesium.PolylineGlowMaterialProperty({{glowPower:0.3,taperPower:1.0,color:Cesium.Color.fromCssColorString('#fbbf24')}}) }},
-  }});
+    orientation: new Cesium.VelocityOrientationProperty(prop),
+    point: { pixelSize:16, color:Cesium.Color.fromCssColorString('#fbbf24'), outlineColor:Cesium.Color.BLACK, outlineWidth:2, disableDepthTestDistance:Number.POSITIVE_INFINITY },
+    label: { text:'🛸', font:'22px sans-serif', fillColor:Cesium.Color.WHITE, verticalOrigin:Cesium.VerticalOrigin.BOTTOM, disableDepthTestDistance:Number.POSITIVE_INFINITY },
+    path: { show:true, leadTime:0, trailTime:60, width:2, material:new Cesium.PolylineGlowMaterialProperty({glowPower:0.4, color:Cesium.Color.fromCssColorString('#fbbf24')}) }
+  });
   viewer.clock.startTime=start; viewer.clock.stopTime=stop; viewer.clock.currentTime=start;
   viewer.clock.multiplier=1; viewer.clock.shouldAnimate=true; viewer.clock.clockRange=Cesium.ClockRange.LOOP_STOP;
-  viewer.trackedEntity=droneEnt;
-  document.getElementById('droneBtn').style.display='none';
-  document.getElementById('stopBtn').style.display='inline-flex';
-  setStatus('Drone simulation running...', 'busy');
-}});
-document.getElementById('stopBtn').addEventListener('click', stopDrone);
-function stopDrone() {{
-  if (droneEnt) {{ viewer.entities.remove(droneEnt); droneEnt=null; }}
-  if (viewer) {{ viewer.trackedEntity=undefined; viewer.clock.shouldAnimate=false; }}
-  document.getElementById('droneBtn').style.display='inline-flex';
-  document.getElementById('stopBtn').style.display='none';
+  viewer.trackedEntity = droneEnt;
+
+  document.getElementById('btnSimulate').style.display = 'none';
+  document.getElementById('btnStopSim').style.display  = '';
+  setStatus('Simulation running...', 'busy');
+});
+
+document.getElementById('btnStopSim').addEventListener('click', stopSim);
+function stopSim() {
+  if (droneEnt) { viewer.entities.remove(droneEnt); droneEnt=null; }
+  if (viewer) { viewer.trackedEntity=undefined; viewer.clock.shouldAnimate=false; }
+  document.getElementById('btnSimulate').style.display = '';
+  document.getElementById('btnStopSim').style.display  = 'none';
   setStatus('Simulation stopped.', '');
-}}
+}
 
-// ═══════════════════════════════════════════════════════
-// EXPORT KMZ
-// ═══════════════════════════════════════════════════════
-document.getElementById('exportBtn').addEventListener('click', () => {{
-  if (!segments.length) {{ setStatus('Nothing to export.', 'err'); return; }}
+// ═══════════════════════════════════════════════════════════════
+// FIT VIEW
+// ═══════════════════════════════════════════════════════════════
+function fitView() {
+  if (!viewer) return;
+  const all = waypoints;
+  if (!all.length) return;
+  if (all.length === 1) {
+    viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(all[0].lon, all[0].lat, 1500), duration: 1 });
+    return;
+  }
+  const positions = all.map(w => Cesium.Cartesian3.fromDegrees(w.lon, w.lat, w.alt));
+  const sphere = Cesium.BoundingSphere.fromPoints(positions);
+  viewer.camera.flyToBoundingSphere(sphere, {
+    duration: 1.5,
+    offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), Math.max(sphere.radius*3, 500))
+  });
+}
 
-  // Build KML string
-  let placemarks = '';
-  segments.forEach((seg, si) => {{
-    if (!seg.coords.length) return;
-    const coordStr = seg.coords.map(c => `${{c[0]}},${{c[1]}},${{c[2]||0}}`).join(' ');
-    placemarks += `
-    <Placemark>
-      <name>${{seg.name}}</name>
-      <LineString>
-        <altitudeMode>absolute</altitudeMode>
-        <coordinates>${{coordStr}}</coordinates>
-      </LineString>
-    </Placemark>`;
-  }});
+// ═══════════════════════════════════════════════════════════════
+// KML IMPORT
+// ═══════════════════════════════════════════════════════════════
+function parseKML(kmlText) {
+  const segs = [];
+  const placemarksRaw = kmlText.match(/<Placemark[\s\S]*?<\/Placemark>/gi) || [];
+  const fallback = kmlText.match(/<coordinates[^>]*>([\s\S]*?)<\/coordinates>/i);
+
+  placemarksRaw.forEach((block, i) => {
+    const nameMatch = block.match(/<name[^>]*>([\s\S]*?)<\/n(?:ame)?>/i);
+    const name = nameMatch ? nameMatch[1].replace(/<!\[CDATA\[|\]\]>/g,'').trim() : `Route ${i+1}`;
+    const coordBlock = block.match(/<coordinates[^>]*>([\s\S]*?)<\/coordinates>/i);
+    if (!coordBlock) return;
+    const pts = coordBlock[1].trim().split(/\s+/).map(t => {
+      const p = t.split(',');
+      return p.length >= 2 ? { lon: parseFloat(p[0]), lat: parseFloat(p[1]), alt: parseFloat(p[2]||76) } : null;
+    }).filter(Boolean);
+    if (pts.length) segs.push({ name, pts });
+  });
+
+  if (!segs.length && fallback) {
+    const pts = fallback[1].trim().split(/\s+/).map(t => {
+      const p = t.split(',');
+      return p.length >= 2 ? { lon: parseFloat(p[0]), lat: parseFloat(p[1]), alt: parseFloat(p[2]||76) } : null;
+    }).filter(Boolean);
+    if (pts.length) segs.push({ name: 'Imported Route', pts });
+  }
+  return segs;
+}
+
+document.getElementById('btnImport').addEventListener('click', () => document.getElementById('fileInput').click());
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0]; if (!file) return;
+  setStatus(`Loading ${file.name}...`, 'busy');
+  try {
+    let kmlText;
+    if (file.name.toLowerCase().endsWith('.kmz')) {
+      const buf  = await file.arrayBuffer();
+      const zip  = await JSZip.loadAsync(buf);
+      const kmlF = Object.values(zip.files).find(f => f.name.toLowerCase().endsWith('.kml'));
+      if (!kmlF) throw new Error('No KML inside KMZ');
+      kmlText = await kmlF.async('string');
+    } else {
+      kmlText = await file.text();
+    }
+
+    const segs = parseKML(kmlText);
+    if (!segs.length) throw new Error('No coordinates found');
+
+    waypoints = [];
+    const defAlt = parseFloat(document.getElementById('defaultAlt').value) || 76;
+    const defSpd = parseFloat(document.getElementById('defaultSpeed').value) || 8;
+
+    segs.forEach(seg => {
+      seg.pts.forEach((pt, i) => {
+        const cmd = (!waypoints.length) ? 'TAKEOFF' : 'WAYPOINT';
+        waypoints.push({ id: uid(), cmd, lat: pt.lat, lon: pt.lon, alt: pt.alt || defAlt, speed: defSpd, param1: 0, param2: 0, param3: 0 });
+      });
+    });
+
+    buildWpList();
+    renderGlobe();
+    fitView();
+    setStatus(`✓ Loaded ${file.name} — ${waypoints.length} waypoints across ${segs.length} segment(s)`, 'ok');
+  } catch(err) {
+    setStatus(`Error loading file: ${err.message}`, 'err');
+  }
+  e.target.value = '';
+});
+
+// ═══════════════════════════════════════════════════════════════
+// KML EXPORT
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btnExport').addEventListener('click', () => {
+  if (!waypoints.length) { setStatus('Nothing to export.', 'err'); return; }
+
+  let pm = '';
+  waypoints.forEach((wp, i) => {
+    pm += `
+  <Placemark>
+    <name>WP${String(i+1).padStart(3,'0')} ${wp.cmd}</name>
+    <description>Alt: ${wp.alt}m | Speed: ${wp.speed}m/s</description>
+    <Point><coordinates>${wp.lon},${wp.lat},${wp.alt}</coordinates></Point>
+  </Placemark>`;
+  });
+
+  // Flight path line
+  const lineCoords = waypoints.map(w => `${w.lon},${w.lat},${w.alt}`).join('\n          ');
   const kml = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
-    <name>Skyphor Flight Plan</name>${{placemarks}}
-  </Document>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+<Document>
+  <name>Skyphor Mission — ${new Date().toISOString().slice(0,10)}</name>
+  <description>Generated by Skyphor Mission Planner | ${waypoints.length} waypoints</description>
+
+  <Style id="flightPath">
+    <LineStyle><color>ff0088ff</color><width>3</width></LineStyle>
+  </Style>
+
+  <Placemark>
+    <name>Flight Path</name>
+    <styleUrl>#flightPath</styleUrl>
+    <LineString>
+      <altitudeMode>absolute</altitudeMode>
+      <coordinates>
+          ${lineCoords}
+      </coordinates>
+    </LineString>
+  </Placemark>
+${pm}
+</Document>
 </kml>`;
 
-  // Download as .kml (browsers can't create ZIP natively without a library)
-  const blob = new Blob([kml], {{type:'application/vnd.google-earth.kml+xml'}});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = 'skyphor_flight_plan.kml';
-  a.click(); URL.revokeObjectURL(url);
-  setStatus('KML exported.', 'ok');
-}});
+  const blob = new Blob([kml], {type:'application/vnd.google-earth.kml+xml'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `skyphor_mission_${new Date().toISOString().slice(0,10)}.kml`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  setStatus(`Exported ${waypoints.length} waypoints as KML`, 'ok');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// TOPBAR MODE BUTTONS
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('modeWp').addEventListener('click',     () => { surveyPoly=[]; fencePoints=[]; setMode('wp'); closeRightPanel(); });
+document.getElementById('modeSurvey').addEventListener('click', () => { surveyPoly=[]; setMode('survey'); });
+document.getElementById('modeFence').addEventListener('click',  () => { fencePoints=[]; setMode('fence'); closeRightPanel(); });
+document.getElementById('modeHome').addEventListener('click',   () => { setMode('home'); closeRightPanel(); });
+
+document.getElementById('btnClearAll').addEventListener('click', () => {
+  if (!confirm('Clear all waypoints, home, and fence?')) return;
+  waypoints=[]; homePos=null; fencePoints=[]; surveyPoly=[];
+  selectedWpId=null;
+  clearGlobe();
+  if (fenceEnt) { viewer.entities.remove(fenceEnt); fenceEnt=null; }
+  if (surveyPolyEnt) { viewer.entities.remove(surveyPolyEnt); surveyPolyEnt=null; }
+  buildWpList(); drawAltProfile(); updateStats();
+  setStatus('Cleared.', '');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// TABS
+// ═══════════════════════════════════════════════════════════════
+document.querySelectorAll('.sb-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.sb-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'stats') drawAltProfile();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// FAB BUTTONS
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('fabFit').addEventListener('click', fitView);
+
+// ═══════════════════════════════════════════════════════════════
+// MAP LAYER SWITCHER
+// ═══════════════════════════════════════════════════════════════
+function switchMapLayer(layerKey) {
+  if (!viewer || !window._mapProviders) return;
+  const provider = window._mapProviders[layerKey];
+  if (!provider) return;
+  // Remove all imagery layers and add the new one
+  viewer.imageryLayers.removeAll();
+  viewer.imageryLayers.addImageryProvider(provider);
+  window._activeLayer = layerKey;
+  // Update FAB highlight states
+  ['fabSat','fabStreet','fabTopo'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('on');
+  });
+  const idMap = { sat:'fabSat', street:'fabStreet', topo:'fabTopo' };
+  const el = document.getElementById(idMap[layerKey]);
+  if (el) el.classList.add('on');
+  const names = { sat:'Satellite (Esri)', street:'Street Map (OSM)', topo:'Topographic (Esri)' };
+  setStatus(`Map layer: ${names[layerKey]}`, 'ok');
+}
+document.getElementById('fabSat').addEventListener('click',    () => switchMapLayer('sat'));
+document.getElementById('fabStreet').addEventListener('click', () => switchMapLayer('street'));
+document.getElementById('fabTopo').addEventListener('click',   () => switchMapLayer('topo'));
+
+// ═══════════════════════════════════════════════════════════════
+// LOCATION SEARCH (Nominatim — no API key needed)
+// ═══════════════════════════════════════════════════════════════
+let searchDebounce = null;
+const searchInput   = document.getElementById('searchInput');
+const searchResults = document.getElementById('searchResults');
+
+async function doSearch(query) {
+  if (!query.trim()) { searchResults.style.display='none'; return; }
+  searchResults.style.display = 'block';
+  searchResults.innerHTML = '<div class="search-loading">Searching...</div>';
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&addressdetails=1`;
+    const res  = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+    const data = await res.json();
+    if (!data.length) {
+      searchResults.innerHTML = '<div class="search-loading">No results found</div>';
+      return;
+    }
+    searchResults.innerHTML = '';
+    data.forEach(item => {
+      const parts = item.display_name.split(', ');
+      const main  = parts.slice(0, 2).join(', ');
+      const sub   = parts.slice(2, 4).join(', ');
+      const div   = document.createElement('div');
+      div.className = 'search-result';
+      div.innerHTML = `<strong>${main}</strong>${sub ? '<br><span style="font-size:11px;opacity:.6">' + sub + '</span>' : ''}`;
+      div.addEventListener('click', () => {
+        const lat = parseFloat(item.lat), lon = parseFloat(item.lon);
+        const box  = item.boundingbox;
+        if (viewer) {
+          if (box) {
+            const south=parseFloat(box[0]),north=parseFloat(box[1]),west=parseFloat(box[2]),east=parseFloat(box[3]);
+            const rect = Cesium.Rectangle.fromDegrees(west, south, east, north);
+            viewer.camera.flyTo({ destination: rect, duration: 1.2 });
+          } else {
+            viewer.camera.flyTo({
+              destination: Cesium.Cartesian3.fromDegrees(lon, lat, 8000),
+              duration: 1.2
+            });
+          }
+        }
+        searchResults.style.display = 'none';
+        searchInput.value = item.display_name.split(', ').slice(0,3).join(', ');
+        setStatus(`Flew to: ${main}`, 'ok');
+      });
+      searchResults.appendChild(div);
+    });
+  } catch(err) {
+    searchResults.innerHTML = '<div class="search-loading">Search unavailable</div>';
+  }
+}
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => doSearch(searchInput.value), 400);
+});
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { clearTimeout(searchDebounce); doSearch(searchInput.value); }
+  if (e.key === 'Escape') { searchResults.style.display='none'; searchInput.blur(); }
+});
+document.getElementById('searchBtn').addEventListener('click', () => doSearch(searchInput.value));
+// Close results when clicking outside
+document.addEventListener('click', e => {
+  if (!e.target.closest('#mapSearch')) searchResults.style.display = 'none';
+});
+
+document.getElementById('fabFullscreen').addEventListener('click', () => {
+  const app = document.getElementById('app');
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+    document.getElementById('fabFullscreen').classList.remove('on');
+  } else {
+    app.requestFullscreen();
+    document.getElementById('fabFullscreen').classList.add('on');
+  }
+  setTimeout(() => { if (viewer) viewer.forceResize(); }, 300);
+});
+
+document.getElementById('fabTerrain').addEventListener('click', () => {
+  if (!viewer) return;
+  terrainOn = !terrainOn;
+  if (terrainOn) {
+    viewer.terrainProvider = new Cesium.CesiumTerrainProvider({ url: Cesium.IonResource.fromAssetId(1) });
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+    document.getElementById('fabTerrain').classList.add('on');
+    setStatus('3D terrain enabled', 'ok');
+  } else {
+    viewer.terrainProvider = Cesium.EllipsoidTerrainProvider.INSTANCE;
+    viewer.scene.globe.enableLighting = false;
+    document.getElementById('fabTerrain').classList.remove('on');
+    setStatus('Flat terrain', '');
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// LIDAR TOGGLE
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('lidarToggle').addEventListener('click', () => {
+  lidarOn = !lidarOn;
+  const btn = document.getElementById('lidarToggle');
+  btn.textContent = lidarOn ? '◉ SHOW SWATH COVERAGE' : '○ SWATH COVERAGE OFF';
+  btn.className = 'lidar-toggle ' + (lidarOn ? 'on' : 'off');
+  renderGlobe();
+  setStatus(`LiDAR swath ${lidarOn ? 'enabled' : 'disabled'}`, lidarOn ? 'ok' : '');
+});
+
+// Update LiDAR display when alt changes
+document.getElementById('lidarAlt').addEventListener('input', () => {
+  updateLidarDisplay();
+  if (lidarOn) renderGlobe();
+});
+
+// ═══════════════════════════════════════════════════════════════
+// SURVEY WIZARD BUTTONS
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('btnGenGrid').addEventListener('click', generateSurveyGrid);
+document.getElementById('btnCloseWiz').addEventListener('click', () => {
+  surveyPoly=[]; setMode('wp'); closeRightPanel();
+  if (surveyPolyEnt) { viewer.entities.remove(surveyPolyEnt); surveyPolyEnt=null; }
+});
+
+// Escape key
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    setMode('wp'); closeRightPanel(); stopSim();
+    if (document.fullscreenElement) document.exitFullscreen();
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selectedWpId && document.activeElement.tagName !== 'INPUT') {
+    waypoints = waypoints.filter(w => w.id !== selectedWpId);
+    selectedWpId = null;
+    buildWpList(); renderGlobe();
+    setStatus('Waypoint deleted.', 'ok');
+  }
+  if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+    if (waypoints.length) { waypoints.pop(); buildWpList(); renderGlobe(); setStatus('Undo', 'ok'); }
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════════════
+updateLidarDisplay();
+buildWpList();
+updateStats();
+setMode('wp');
+setStatus('Ready — click HOME to set takeoff point, then WAYPOINT to plan your route', '');
 </script>
 </body>
-</html>"""
-
-
-# ---------------------------------------------------------------------------
-# Streamlit UI
-# ---------------------------------------------------------------------------
-
-st.set_page_config(page_title="Skyphor", page_icon="✈", layout="wide")
-st.title("✈ Skyphor")
-st.caption("presented by Charlie Brooks")
-
-# ── Session state init ────────────────────────────────────────────────────────
-if "segments" not in st.session_state:
-    st.session_state.segments = []
-
-# ── Upload / input row ────────────────────────────────────────────────────────
-st.markdown("---")
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    uploaded = st.file_uploader(
-        "📁 Upload KMZ or KML file",
-        type=["kmz", "kml"],
-        help="Supports multi-segment KMZ files — all named routes will appear in the flight plan panel."
-    )
-
-with col2:
-    coords_text = st.text_area(
-        "Or paste lon,lat pairs (one per line)",
-        placeholder="-87.6298,41.8781\n-87.6350,41.8800\n-87.6400,41.8820",
-        height=130,
-    )
-
-# ── Parse KMZ / KML ──────────────────────────────────────────────────────────
-if uploaded is not None:
-    try:
-        raw = uploaded.read()
-        if uploaded.name.lower().endswith(".kmz"):
-            segs = parse_kmz_structured(raw)
-        else:
-            segs = parse_kml_file(raw)
-
-        st.session_state.segments = segs
-        stats = route_stats(segs)
-        st.success(
-            f"✅ Loaded **{uploaded.name}** — "
-            f"{len(segs)} segment(s), "
-            f"{stats['total_pts']} waypoints, "
-            f"{stats['total_km']:.1f} km total route distance."
-        )
-
-        # Show segment breakdown
-        with st.expander(f"📋 Route segments ({len(segs)})", expanded=False):
-            for i, seg in enumerate(segs):
-                color_labels = ["🔵","🟢","🟡","🟠","🟣","🔴","⚪"]
-                lbl = color_labels[i % len(color_labels)]
-                st.markdown(
-                    f"{lbl} **{seg['name']}** — {len(seg['coords'])} waypoints  "
-                    f"  Start: `{seg['coords'][0][0]:.5f}, {seg['coords'][0][1]:.5f}`"
-                )
-
-    except Exception as e:
-        st.error(f"❌ Failed to parse file: {e}")
-
-# ── Parse manual coords ───────────────────────────────────────────────────────
-elif coords_text.strip():
-    try:
-        pts = []
-        for line in coords_text.strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(",")
-            if len(parts) < 2:
-                raise ValueError(f"Bad line: {line!r}")
-            lon = float(parts[0].strip())
-            lat = float(parts[1].strip())
-            alt = float(parts[2].strip()) if len(parts) > 2 else 0.0
-            pts.append([lon, lat, alt])
-        if len(pts) < 2:
-            raise ValueError("Need at least 2 coordinate pairs.")
-        st.session_state.segments = [{"name": "Manual Route", "coords": pts}]
-        st.success(f"✅ {len(pts)} manual waypoints loaded.")
-    except Exception as e:
-        st.error(f"❌ Could not parse coordinates: {e}")
-
-# ── Render Cesium ─────────────────────────────────────────────────────────────
-segments_json = json.dumps(st.session_state.segments)
-html_str = _build_cesium_html(segments_json)
-components_html(html_str, height=700, scrolling=False)
+</html>
