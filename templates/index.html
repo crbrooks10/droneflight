@@ -7,8 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 :root {
   --bg:      #060a0f;
@@ -155,6 +153,8 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--dis
 .btn-undo:hover{border-color:var(--amber);color:var(--amber);background:rgba(255,179,0,.08)}
 .btn-clr{background:var(--card);color:var(--text2);border:1.5px solid var(--border)}
 .btn-clr:hover{border-color:var(--red);color:var(--red);background:rgba(255,61,90,.08)}
+.btn-imp{background:var(--card);color:var(--cyan);border:1.5px solid rgba(0,210,255,.25)}
+.btn-imp:hover{border-color:var(--cyan);background:rgba(0,210,255,.1)}
 
 /* TIPS */
 #tips{background:rgba(0,210,255,.05);border:1px solid rgba(0,210,255,.15);border-radius:8px;padding:10px 12px}
@@ -359,7 +359,9 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--dis
     <!-- ACTIONS -->
     <div>
       <div class="sec-lbl">Actions</div>
+      <input type="file" id="fileIn" accept=".kml,.kmz" style="display:none" onchange="importFile(event)"/>
       <div class="act-btns">
+        <button class="btn btn-imp" onclick="document.getElementById('fileIn').click()">⬆ Import KMZ / KML</button>
         <button class="btn btn-exp" onclick="exportKMZ()">⬇ Export KMZ</button>
         <button class="btn btn-undo" onclick="undoLast()">↩ Undo Last Point</button>
         <button class="btn btn-clr" onclick="clearAll()">✕ Clear All</button>
@@ -400,7 +402,7 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--dis
   </div>
 
   <div id="lyr-btns">
-    <div class="lbtn on"  id="lb-sat"    title="Satellite" onclick="setLayer('sat')">🛰</div>
+    <div class="lbtn on"  id="lb-sat"    title="Satellite (Esri/Maxar)" onclick="setLayer('sat')">🛰</div>
     <div class="lbtn"     id="lb-street" title="Street"    onclick="setLayer('street')">🗺</div>
     <div class="lbtn"     id="lb-topo"   title="Terrain"   onclick="setLayer('topo')">⛰</div>
   </div>
@@ -420,499 +422,569 @@ html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--dis
 
 </div><!-- /app -->
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
-'use strict';
+// ═══════════════════════════════════════════════════════════════════════
+// SKYPHOR LIDAR PLANNER — all functions at window (global) scope
+// so onclick="setMode()" / onclick="setFOV()" / onchange="importFile()"
+// all resolve correctly from HTML attributes.
+//
+// ONLY the map = L.map(...) call is inside window.addEventListener('load')
+// because Leaflet (L) must be fully parsed before it is used.
+// Everything else is declared at the top level of this script tag.
+// ═══════════════════════════════════════════════════════════════════════
 
-// ═══════════════════════════════════════════════════
-// MAP INIT — Leaflet + Google Maps satellite tiles
-// Google satellite tiles work via public endpoint,
-// same imagery as Google Maps/Earth, no API key
-// ═══════════════════════════════════════════════════
-const map = L.map('map', {
-  center: [39.5, -98.5],
-  zoom: 5,
-  zoomControl: true,
-  doubleClickZoom: false,   // we use dblclick to end path
-});
+// ── STATE ───────────────────────────────────────────────────────────────
+var drawing   = true;
+var pts       = [];
+var markers   = [];
+var pathLine  = null;
+var swathPoly = null;
+var preview   = null;
+var fov       = 60;
+var altFt     = 250;
+var map       = null;
+var TILES     = null;
+var srchTimer = null;
+var toastTimer= null;
 
-const TILES = {
-  // Google Maps Hybrid (satellite + labels) — same as Google Maps
-  sat: L.tileLayer(
-    'https://mt{s}.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}',
-    { subdomains:'0123', attribution:'© <a href="https://maps.google.com">Google Maps</a>', maxZoom:22, maxNativeZoom:22 }
-  ),
-  // Google Street Map
-  street: L.tileLayer(
-    'https://mt{s}.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}',
-    { subdomains:'0123', attribution:'© <a href="https://maps.google.com">Google Maps</a>', maxZoom:22, maxNativeZoom:22 }
-  ),
-  // Google Terrain
-  topo: L.tileLayer(
-    'https://mt{s}.google.com/vt/lyrs=p&hl=en&x={x}&y={y}&z={z}',
-    { subdomains:'0123', attribution:'© <a href="https://maps.google.com">Google Maps</a>', maxZoom:22, maxNativeZoom:22 }
-  ),
-};
+var FOV_COLOR = { 60: '#00e676', 70: '#ffb300', 90: '#ff3d5a' };
 
-TILES.sat.addTo(map);
+function swathFt(f, a) { return 2 * a * Math.tan((f / 2) * Math.PI / 180); }
+function swathM(f, a)  { return swathFt(f, a) * 0.3048; }
 
+// ── HELPERS ──────────────────────────────────────────────────────────────
+function el(id) { return document.getElementById(id); }
+function setText(id, v) { var e = el(id); if (e) e.textContent = v; }
+function setStyle(id, prop, v) { var e = el(id); if (e) e.style[prop] = v; }
+
+// ── TOAST ────────────────────────────────────────────────────────────────
+function toast(msg, ico) {
+  var t = el('toast');
+  if (!t) return;
+  t.textContent = (ico || '✓') + '  ' + msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2800);
+}
+
+// ── STATUS BAR ───────────────────────────────────────────────────────────
+function setStatus(msg, type) {
+  setText('s-txt', msg);
+  var d = el('s-dot');
+  if (d) d.className = type || '';
+}
+
+// ── LAYER SWITCHER ────────────────────────────────────────────────────────
 function setLayer(k) {
-  Object.values(TILES).forEach(t => { if (map.hasLayer(t)) map.removeLayer(t); });
+  if (!map || !TILES) return;
+  Object.keys(TILES).forEach(function (key) {
+    if (map.hasLayer(TILES[key])) map.removeLayer(TILES[key]);
+  });
   TILES[k].addTo(map);
-  ['lb-sat','lb-street','lb-topo'].forEach(id => document.getElementById(id).classList.remove('on'));
-  document.getElementById({sat:'lb-sat',street:'lb-street',topo:'lb-topo'}[k]).classList.add('on');
+  ['lb-sat', 'lb-street', 'lb-topo'].forEach(function (id) {
+    var b = el(id); if (b) b.classList.remove('on');
+  });
+  var ids = { sat: 'lb-sat', street: 'lb-street', topo: 'lb-topo' };
+  var btn = el(ids[k]); if (btn) btn.classList.add('on');
 }
 
-// ═══════════════════════════════════════════════════
-// STATE
-// ═══════════════════════════════════════════════════
-let drawing   = true;
-let pts       = [];     // [{lat,lng}]
-let markers   = [];
-let pathLine  = null;
-let swathPoly = null;
-let preview   = null;
-let fov       = 60;
-let altFt     = 250;
-
-const FOV_COLOR = { 60:'#00e676', 70:'#ffb300', 90:'#ff3d5a' };
-
-function swathFt(f, a) { return 2 * a * Math.tan((f/2) * Math.PI/180); }
-function swathM(f, a)  { return swathFt(f,a) * 0.3048; }
-
-// ═══════════════════════════════════════════════════
-// MODE
-// ═══════════════════════════════════════════════════
+// ── DRAW MODE ─────────────────────────────────────────────────────────────
 function setMode(m) {
-  drawing = m === 'draw';
-  document.getElementById('btn-draw').classList.toggle('active', drawing);
-  document.getElementById('btn-pan').classList.toggle('active', !drawing);
-  map.getContainer().style.cursor = drawing ? 'crosshair' : '';
-  if (!drawing && preview) { map.removeLayer(preview); preview = null; }
-  setStatus(drawing ? 'Draw mode — click map to place waypoints, double-click to finish' : 'Pan mode — drag to move map', drawing ? 'active' : 'ready');
+  drawing = (m === 'draw');
+  var bd = el('btn-draw'), bp = el('btn-pan');
+  if (bd) bd.classList.toggle('active', drawing);
+  if (bp) bp.classList.toggle('active', !drawing);
+  if (map) map.getContainer().style.cursor = drawing ? 'crosshair' : '';
+  if (!drawing && preview && map) { map.removeLayer(preview); preview = null; }
+  setStatus(
+    drawing ? 'Draw mode — click map to place waypoints, double-click to finish'
+            : 'Pan mode — drag to move map',
+    drawing ? 'active' : 'ready'
+  );
 }
 
-// ═══════════════════════════════════════════════════
-// FOV
-// ═══════════════════════════════════════════════════
+// ── FOV SELECTOR ──────────────────────────────────────────────────────────
 function setFOV(f) {
   fov = f;
-  [60,70,90].forEach(n => document.getElementById(`fc${n}`).classList.toggle('sel', n===f));
+  [60, 70, 90].forEach(function (n) {
+    var c = el('fc' + n); if (c) c.classList.toggle('sel', n === f);
+  });
   updateSwath();
   renderSwath();
 }
 
 function onAlt() {
-  altFt = parseFloat(document.getElementById('altIn').value) || 250;
+  var inp = el('altIn');
+  altFt = inp ? (parseFloat(inp.value) || 250) : 250;
   updateSwath();
   renderSwath();
   updateStats();
 }
 
+// ── SWATH DISPLAY ─────────────────────────────────────────────────────────
 function updateSwath() {
-  const sw  = swathFt(fov, altFt);
-  const swm = sw * 0.3048;
-  const col = FOV_COLOR[fov];
-  const pct = Math.min(100, sw / swathFt(90, altFt) * 100);
+  var sw  = swathFt(fov, altFt);
+  var swm = sw * 0.3048;
+  var col = FOV_COLOR[fov];
+  var pct = Math.min(100, sw / swathFt(90, altFt) * 100);
 
-  document.getElementById('sw-fov').textContent  = fov + '°';
-  document.getElementById('sw-half').textContent = (fov/2) + '°';
-  document.getElementById('sw-ft').textContent   = Math.round(sw) + ' ft';
-  document.getElementById('sw-ft').style.color   = col;
-  document.getElementById('sw-m').textContent    = swm.toFixed(1) + ' m';
-  document.getElementById('sw-form').textContent = `2×${altFt}×tan(${fov/2}°)`;
-  document.getElementById('sw-bar').style.width      = pct + '%';
-  document.getElementById('sw-bar').style.background = col;
+  setText('sw-fov',  fov + '°');
+  setText('sw-half', (fov / 2) + '°');
+  setText('sw-ft',   Math.round(sw) + ' ft');
+  setStyle('sw-ft',  'color', col);
+  setText('sw-m',    swm.toFixed(1) + ' m');
+  setText('sw-form', '2×' + altFt + '×tan(' + (fov / 2) + '°)');
 
-  // HUD
-  document.getElementById('h-sw').textContent  = Math.round(sw) + ' ft';
-  document.getElementById('h-fov').textContent = fov + '° FOV';
-  document.getElementById('h-fov').style.color = col;
-  document.getElementById('h-alt').textContent = altFt + ' ft';
+  var bar = el('sw-bar');
+  if (bar) { bar.style.width = pct + '%'; bar.style.background = col; }
 
-  // Card width labels
-  [60,70,90].forEach(n => {
-    document.getElementById(`fw${n}`).textContent = Math.round(swathFt(n, altFt));
+  setText('h-sw',  Math.round(sw) + ' ft');
+  setText('h-fov', fov + '° FOV');
+  setStyle('h-fov', 'color', col);
+  setText('h-alt', altFt + ' ft');
+
+  [60, 70, 90].forEach(function (n) {
+    setText('fw' + n, Math.round(swathFt(n, altFt)));
   });
 }
 
-// ═══════════════════════════════════════════════════
-// MAP EVENTS
-// ═══════════════════════════════════════════════════
-map.on('click', e => {
-  if (!drawing) return;
-  const p = { lat: e.latlng.lat, lng: e.latlng.lng };
-  pts.push(p);
-  addMarker(p, pts.length);
-  renderPath();
-  renderSwath();
-  updateStats();
-  setStatus(`WP ${pts.length} placed — click to add more, double-click to finish`, 'active');
-});
+// ── GEO MATH ──────────────────────────────────────────────────────────────
+function bearing(la1, lo1, la2, lo2) {
+  var r = Math.PI / 180, dL = (lo2 - lo1) * r;
+  var y = Math.sin(dL) * Math.cos(la2 * r);
+  var x = Math.cos(la1 * r) * Math.sin(la2 * r) -
+          Math.sin(la1 * r) * Math.cos(la2 * r) * Math.cos(dL);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
 
-map.on('dblclick', e => {
-  if (!drawing || pts.length < 2) return;
-  L.DomEvent.stop(e);
-  if (preview) { map.removeLayer(preview); preview = null; }
-  setMode('pan');
-  toast('Path complete! Export KMZ when ready.', '✓');
-});
+function geoOffset(la, lo, distM, bear) {
+  var R = 6371000, d = distM / R, b = bear * Math.PI / 180;
+  var la1 = la * Math.PI / 180, lo1 = lo * Math.PI / 180;
+  var la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(b));
+  var lo2 = lo1 + Math.atan2(
+    Math.sin(b) * Math.sin(d) * Math.cos(la1),
+    Math.cos(d) - Math.sin(la1) * Math.sin(la2)
+  );
+  return { lat: la2 * 180 / Math.PI, lng: lo2 * 180 / Math.PI };
+}
 
-map.on('mousemove', e => {
-  // Coord tooltip
-  const tip = document.getElementById('ctip');
-  tip.textContent = `${e.latlng.lat.toFixed(5)}° N   ${e.latlng.lng.toFixed(5)}° E`;
-  tip.style.display = 'block';
+function havKm(la1, lo1, la2, lo2) {
+  var R = 6371, r = Math.PI / 180;
+  var dLa = (la2 - la1) * r, dLo = (lo2 - lo1) * r;
+  var a = Math.sin(dLa / 2) * Math.sin(dLa / 2) +
+          Math.cos(la1 * r) * Math.cos(la2 * r) *
+          Math.sin(dLo / 2) * Math.sin(dLo / 2);
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
 
-  // Rubber-band
-  if (!drawing || !pts.length) return;
-  const last = pts[pts.length-1];
-  const lls  = [[last.lat, last.lng],[e.latlng.lat, e.latlng.lng]];
-  if (preview) { preview.setLatLngs(lls); }
-  else {
-    preview = L.polyline(lls, {
-      color: FOV_COLOR[fov], weight:1.5, dashArray:'6 4', opacity:.55
-    }).addTo(map);
-  }
-});
+// ── STATS ─────────────────────────────────────────────────────────────────
+function updateStats() {
+  setText('st-wps', pts.length);
+  var dist = 0;
+  for (var i = 1; i < pts.length; i++)
+    dist += havKm(pts[i-1].lat, pts[i-1].lng, pts[i].lat, pts[i].lng);
+  setText('st-dist', dist.toFixed(2));
+  setText('st-area', ((dist * 1000 * swathM(fov, altFt)) / 10000).toFixed(2));
+  var t = dist * 1000 / 8 / 60, mm = Math.floor(t), ss = Math.round((t - mm) * 60);
+  setText('st-time', mm + ':' + (ss < 10 ? '0' : '') + ss);
+}
 
-map.on('mouseout', () => {
-  document.getElementById('ctip').style.display = 'none';
-  if (preview) { map.removeLayer(preview); preview = null; }
-});
-
-// ═══════════════════════════════════════════════════
-// MARKERS
-// ═══════════════════════════════════════════════════
+// ── MARKERS ───────────────────────────────────────────────────────────────
 function addMarker(p, n) {
-  const col = FOV_COLOR[fov];
-  const ico = L.divIcon({
-    className:'',
-    html:`<div style="width:22px;height:22px;border-radius:50%;background:${col};
-          border:2.5px solid #fff;display:flex;align-items:center;justify-content:center;
-          font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:700;color:#000;
-          box-shadow:0 2px 8px rgba(0,0,0,.5);">${n}</div>`,
-    iconSize:[22,22], iconAnchor:[11,11],
+  if (!map) return;
+  var col = FOV_COLOR[fov];
+  var ico = L.divIcon({
+    className: '',
+    html: '<div style="width:22px;height:22px;border-radius:50%;' +
+          'background:' + col + ';border:2.5px solid #fff;' +
+          'display:flex;align-items:center;justify-content:center;' +
+          'font-family:JetBrains Mono,monospace;font-size:9px;font-weight:700;' +
+          'color:#000;box-shadow:0 2px 8px rgba(0,0,0,.5);">' + n + '</div>',
+    iconSize: [22, 22], iconAnchor: [11, 11]
   });
-  const mk = L.marker([p.lat,p.lng],{icon:ico,draggable:true});
-  mk.on('drag', e => {
-    const i = markers.indexOf(mk);
-    pts[i] = {lat:e.latlng.lat, lng:e.latlng.lng};
+  var mk = L.marker([p.lat, p.lng], { icon: ico, draggable: true });
+  mk.on('drag', function (e) {
+    var idx = markers.indexOf(mk);
+    if (idx >= 0) pts[idx] = { lat: e.latlng.lat, lng: e.latlng.lng };
     renderPath(); renderSwath(); updateStats();
   });
   mk.addTo(map);
   markers.push(mk);
 }
 
-// ═══════════════════════════════════════════════════
-// RENDER PATH
-// ═══════════════════════════════════════════════════
+// ── RENDER PATH ───────────────────────────────────────────────────────────
 function renderPath() {
-  if (pathLine) map.removeLayer(pathLine);
+  if (!map) return;
+  if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
   if (pts.length < 2) return;
-  pathLine = L.polyline(pts.map(p=>[p.lat,p.lng]),
-    {color:'#ff6b2b', weight:3, opacity:.95}
+  pathLine = L.polyline(
+    pts.map(function (p) { return [p.lat, p.lng]; }),
+    { color: '#ff6b2b', weight: 3, opacity: 0.95 }
   ).addTo(map);
 }
 
-// ═══════════════════════════════════════════════════
-// RENDER LIDAR SWATH CORRIDOR
-// Builds a corridor polygon around the flight path.
-// Half-width = swathM(fov,alt)/2 perpendicular to each segment.
-// ═══════════════════════════════════════════════════
+// ── RENDER SWATH CORRIDOR ─────────────────────────────────────────────────
 function renderSwath() {
-  if (swathPoly) map.removeLayer(swathPoly);
+  if (!map) return;
+  if (swathPoly) { map.removeLayer(swathPoly); swathPoly = null; }
   if (pts.length < 2) return;
 
-  const halfM = swathM(fov, altFt) / 2;
-  const col   = FOV_COLOR[fov];
-  const left  = [], right = [];
+  var halfM = swathM(fov, altFt) / 2;
+  var col   = FOV_COLOR[fov];
+  var left  = [], right = [];
 
-  for (let i = 0; i < pts.length-1; i++) {
-    const A = pts[i], B = pts[i+1];
-    const br = bearing(A.lat, A.lng, B.lat, B.lng);
-    const lB = (br - 90 + 360) % 360;
-    const rB = (br + 90) % 360;
-
-    const AL = offset(A.lat, A.lng, halfM, lB);
-    const AR = offset(A.lat, A.lng, halfM, rB);
-    const BL = offset(B.lat, B.lng, halfM, lB);
-    const BR = offset(B.lat, B.lng, halfM, rB);
-
+  for (var i = 0; i < pts.length - 1; i++) {
+    var A = pts[i], B = pts[i + 1];
+    var br = bearing(A.lat, A.lng, B.lat, B.lng);
+    var AL = geoOffset(A.lat, A.lng, halfM, (br - 90 + 360) % 360);
+    var AR = geoOffset(A.lat, A.lng, halfM, (br + 90) % 360);
+    var BL = geoOffset(B.lat, B.lng, halfM, (br - 90 + 360) % 360);
+    var BR = geoOffset(B.lat, B.lng, halfM, (br + 90) % 360);
     if (i === 0) { left.push(AL); right.push(AR); }
     left.push(BL); right.push(BR);
   }
 
-  const ring = [
-    ...left.map(p=>[p.lat,p.lng]),
-    ...right.slice().reverse().map(p=>[p.lat,p.lng])
-  ];
+  var ring = left.map(function (p) { return [p.lat, p.lng]; })
+    .concat(right.slice().reverse().map(function (p) { return [p.lat, p.lng]; }));
 
   swathPoly = L.polygon(ring, {
-    color:col, weight:1.5, opacity:.85,
-    fillColor:col, fillOpacity:.18,
+    color: col, weight: 1.5, opacity: 0.85,
+    fillColor: col, fillOpacity: 0.2
   }).addTo(map);
 }
 
-// ═══════════════════════════════════════════════════
-// GEO
-// ═══════════════════════════════════════════════════
-function bearing(la1,lo1,la2,lo2) {
-  const r=Math.PI/180, dL=(lo2-lo1)*r;
-  const y=Math.sin(dL)*Math.cos(la2*r);
-  const x=Math.cos(la1*r)*Math.sin(la2*r)-Math.sin(la1*r)*Math.cos(la2*r)*Math.cos(dL);
-  return (Math.atan2(y,x)*180/Math.PI+360)%360;
-}
-function offset(la,lo,distM,bear) {
-  const R=6371000, d=distM/R, b=bear*Math.PI/180;
-  const la1=la*Math.PI/180, lo1=lo*Math.PI/180;
-  const la2=Math.asin(Math.sin(la1)*Math.cos(d)+Math.cos(la1)*Math.sin(d)*Math.cos(b));
-  const lo2=lo1+Math.atan2(Math.sin(b)*Math.sin(d)*Math.cos(la1),Math.cos(d)-Math.sin(la1)*Math.sin(la2));
-  return {lat:la2*180/Math.PI, lng:lo2*180/Math.PI};
-}
-function havKm(la1,lo1,la2,lo2) {
-  const R=6371,r=Math.PI/180;
-  const dLa=(la2-la1)*r, dLo=(lo2-lo1)*r;
-  const a=Math.sin(dLa/2)**2+Math.cos(la1*r)*Math.cos(la2*r)*Math.sin(dLo/2)**2;
-  return 2*R*Math.asin(Math.sqrt(a));
-}
-
-// ═══════════════════════════════════════════════════
-// STATS
-// ═══════════════════════════════════════════════════
-function updateStats() {
-  document.getElementById('st-wps').textContent = pts.length;
-  let dist = 0;
-  for (let i=1;i<pts.length;i++) dist += havKm(pts[i-1].lat,pts[i-1].lng,pts[i].lat,pts[i].lng);
-  document.getElementById('st-dist').textContent = dist.toFixed(2);
-  const ha = (dist*1000 * swathM(fov,altFt)) / 10000;
-  document.getElementById('st-area').textContent = ha.toFixed(2);
-  const t  = dist*1000/8/60;
-  const m  = Math.floor(t), s = Math.round((t-m)*60);
-  document.getElementById('st-time').textContent = `${m}:${String(s).padStart(2,'0')}`;
-}
-
-// ═══════════════════════════════════════════════════
-// UNDO / CLEAR
-// ═══════════════════════════════════════════════════
+// ── UNDO / CLEAR ──────────────────────────────────────────────────────────
 function undoLast() {
   if (!pts.length) return;
   pts.pop();
-  const m = markers.pop();
-  if (m) map.removeLayer(m);
+  var m = markers.pop();
+  if (m && map) map.removeLayer(m);
   renderPath(); renderSwath(); updateStats();
-  setStatus(`Undo — ${pts.length} waypoint(s) remain`, pts.length ? 'active' : 'ready');
+  setStatus('Undo — ' + pts.length + ' waypoint(s) remain', pts.length ? 'active' : 'ready');
 }
+
 function clearAll() {
-  pts = []; markers.forEach(m=>map.removeLayer(m)); markers=[];
-  if (pathLine)  { map.removeLayer(pathLine);  pathLine=null; }
-  if (swathPoly) { map.removeLayer(swathPoly); swathPoly=null; }
-  if (preview)   { map.removeLayer(preview);   preview=null; }
+  pts = [];
+  markers.forEach(function (m) { if (map) map.removeLayer(m); });
+  markers = [];
+  if (pathLine  && map) { map.removeLayer(pathLine);  pathLine  = null; }
+  if (swathPoly && map) { map.removeLayer(swathPoly); swathPoly = null; }
+  if (preview   && map) { map.removeLayer(preview);   preview   = null; }
   updateStats();
   setStatus('Cleared — ready for new mission', 'ready');
   toast('Map cleared', '✕');
 }
 
-// ═══════════════════════════════════════════════════
-// KMZ EXPORT
-// ═══════════════════════════════════════════════════
-async function exportKMZ() {
-  if (pts.length < 2) { toast('Draw a flight path first!','⚠'); return; }
-
-  const sw   = swathFt(fov, altFt);
-  const swm  = sw * 0.3048;
-  const altM = altFt * 0.3048;
-  const date = new Date().toISOString().slice(0,10);
-
-  // Flight path coords (altitude AGL)
-  const pathCoords = pts.map(p=>`${p.lng},${p.lat},${altM.toFixed(1)}`).join('\n              ');
-
-  // Swath ring
-  const halfM   = swm/2;
-  const left2=[], right2=[];
-  for (let i=0;i<pts.length-1;i++) {
-    const A=pts[i], B=pts[i+1];
-    const br=bearing(A.lat,A.lng,B.lat,B.lng);
-    const AL=offset(A.lat,A.lng,halfM,(br-90+360)%360);
-    const AR=offset(A.lat,A.lng,halfM,(br+90)%360);
-    const BL=offset(B.lat,B.lng,halfM,(br-90+360)%360);
-    const BR=offset(B.lat,B.lng,halfM,(br+90)%360);
-    if (i===0){left2.push(AL);right2.push(AR);}
-    left2.push(BL); right2.push(BR);
+// ── KML PARSING ───────────────────────────────────────────────────────────
+function parseCoordBlock(raw) {
+  var out = [];
+  var tokens = raw.trim().split(/\s+/);
+  for (var i = 0; i < tokens.length; i++) {
+    var parts = tokens[i].split(',');
+    if (parts.length >= 2) {
+      var lng = parseFloat(parts[0]), lat = parseFloat(parts[1]);
+      if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
+        out.push({ lat: lat, lng: lng });
+    }
   }
-  const ring2 = [...left2,...right2.slice().reverse(),left2[0]];
-  const swathCoords = ring2.map(p=>`${p.lng},${p.lat},0`).join('\n              ');
-
-  // Waypoint placemarks
-  const wpPM = pts.map((p,i)=>`
-    <Placemark>
-      <name>WP${String(i+1).padStart(3,'0')}</name>
-      <description>Waypoint ${i+1} | ${altFt}ft AGL</description>
-      <styleUrl>#wpStyle</styleUrl>
-      <Point>
-        <altitudeMode>relativeToGround</altitudeMode>
-        <coordinates>${p.lng},${p.lat},${altM.toFixed(1)}</coordinates>
-      </Point>
-    </Placemark>`).join('');
-
-  // Distance / area
-  let dist=0;
-  for (let i=1;i<pts.length;i++) dist+=havKm(pts[i-1].lat,pts[i-1].lng,pts[i].lat,pts[i].lng);
-  const ha=(dist*1000*swm)/10000;
-
-  // KML string — Google Earth compatible colors
-  // KML color format: aabbggrr (alpha, blue, green, red)
-  const colMap  = { 60:'ff76e600', 70:'ff00b3ff', 90:'ff5a3dff' }; // green/amber/red in KML ABGR
-  const kmlCol  = colMap[fov] || 'ff76e600';
-  const fillCol = kmlCol.replace(/^../, '44'); // 26% alpha
-
-  const kml = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-<Document>
-  <name>Skyphor LiDAR Mission ${date}</name>
-  <description>FOV: ${fov}° | Alt: ${altFt}ft AGL | Swath: ${Math.round(sw)}ft / ${swm.toFixed(1)}m | Dist: ${dist.toFixed(2)}km | Area: ${ha.toFixed(2)}ha</description>
-
-  <Style id="pathStyle">
-    <LineStyle><color>ff2b6bff</color><width>3</width></LineStyle>
-    <PolyStyle><fill>0</fill></PolyStyle>
-  </Style>
-  <Style id="swathStyle">
-    <LineStyle><color>${kmlCol}</color><width>2</width></LineStyle>
-    <PolyStyle><color>${fillCol}</color><fill>1</fill><outline>1</outline></PolyStyle>
-  </Style>
-  <Style id="wpStyle">
-    <IconStyle><scale>0.7</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/wht-circle.png</href></Icon></IconStyle>
-    <LabelStyle><scale>0.8</scale></LabelStyle>
-  </Style>
-
-  <Folder>
-    <name>✈ Flight Path</name>
-    <Placemark>
-      <name>Flight Line — ${fov}° LiDAR · ${altFt}ft</name>
-      <styleUrl>#pathStyle</styleUrl>
-      <LineString>
-        <tessellate>1</tessellate>
-        <altitudeMode>relativeToGround</altitudeMode>
-        <coordinates>
-              ${pathCoords}
-        </coordinates>
-      </LineString>
-    </Placemark>
-    ${wpPM}
-  </Folder>
-
-  <Folder>
-    <name>📡 LiDAR Coverage · ${fov}° FOV · ${Math.round(sw)}ft swath</name>
-    <Placemark>
-      <name>Swath Footprint</name>
-      <description>FOV ${fov}° · Half-angle ${fov/2}° · Width ${Math.round(sw)}ft (${swm.toFixed(1)}m) · Area ${ha.toFixed(2)} ha</description>
-      <styleUrl>#swathStyle</styleUrl>
-      <Polygon>
-        <tessellate>1</tessellate>
-        <altitudeMode>clampToGround</altitudeMode>
-        <outerBoundaryIs>
-          <LinearRing>
-            <coordinates>
-              ${swathCoords}
-            </coordinates>
-          </LinearRing>
-        </outerBoundaryIs>
-      </Polygon>
-    </Folder>
-  </Folder>
-
-</Document>
-</kml>`;
-
-  const zip  = new JSZip();
-  zip.file('doc.kml', kml);
-  const blob = await zip.generateAsync({type:'blob',compression:'DEFLATE'});
-  const a    = Object.assign(document.createElement('a'),{
-    href: URL.createObjectURL(blob),
-    download: `skyphor_${fov}fov_${altFt}ft_${date}.kmz`
-  });
-  a.click();
-  URL.revokeObjectURL(a.href);
-  setStatus(`KMZ exported — ${pts.length} WPs · ${dist.toFixed(2)}km · ${ha.toFixed(2)}ha`, 'ready');
-  toast(`Exported! ${pts.length} WPs · ${dist.toFixed(2)}km · ${ha.toFixed(2)} ha`, '⬇');
+  return out;
 }
 
-// ═══════════════════════════════════════════════════
-// LOCATION SEARCH (Nominatim — free, no key)
-// ═══════════════════════════════════════════════════
-let srchT = null;
-const si = document.getElementById('srch-in');
-const sr = document.getElementById('srch-res');
+function parseKML(kmlText) {
+  var out = [], m, p;
+  // 1. LineString (standard flight path)
+  var re1 = /<LineString[\s\S]*?<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi;
+  while ((m = re1.exec(kmlText)) !== null) {
+    p = parseCoordBlock(m[1]);
+    if (p.length) { out = p; break; }
+  }
+  // 2. Point placemarks
+  if (!out.length) {
+    var re2 = /<Point[\s\S]*?<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi;
+    while ((m = re2.exec(kmlText)) !== null) {
+      out = out.concat(parseCoordBlock(m[1]));
+    }
+  }
+  // 3. Any coordinates block (last resort)
+  if (!out.length) {
+    var re3 = /<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi;
+    while ((m = re3.exec(kmlText)) !== null) {
+      p = parseCoordBlock(m[1]);
+      if (p.length > out.length) out = p;
+    }
+  }
+  return out;
+}
 
-async function doSearch(q) {
-  if (!q.trim()) { sr.style.display='none'; return; }
+// ── IMPORT KMZ / KML ─────────────────────────────────────────────────────
+function importFile(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+  setStatus('Loading ' + file.name + '…', 'active');
+  toast('Loading ' + file.name + '…', '📂');
+
+  var isKMZ = file.name.toLowerCase().endsWith('.kmz');
+
+  if (isKMZ) {
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      JSZip.loadAsync(e.target.result).then(function (zip) {
+        var kmlEntry = null;
+        Object.keys(zip.files).forEach(function (name) {
+          if (!kmlEntry && name.toLowerCase().endsWith('.kml'))
+            kmlEntry = zip.files[name];
+        });
+        if (!kmlEntry) { setStatus('Import error: no KML inside KMZ', 'error'); return; }
+        kmlEntry.async('string').then(function (kmlText) {
+          loadKMLText(kmlText, file.name);
+        });
+      }).catch(function (err) {
+        setStatus('Import error: ' + err.message, 'error');
+        toast('Import failed', '✗');
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    var reader2 = new FileReader();
+    reader2.onload = function (e) { loadKMLText(e.target.result, file.name); };
+    reader2.readAsText(file);
+  }
+}
+
+function loadKMLText(kmlText, name) {
+  var imported = parseKML(kmlText);
+  if (!imported.length) {
+    setStatus('Import error: no coordinates found', 'error');
+    toast('No coordinates found', '✗');
+    return;
+  }
+  clearAll();
+  imported.forEach(function (pt, i) {
+    pts.push({ lat: pt.lat, lng: pt.lng });
+    addMarker({ lat: pt.lat, lng: pt.lng }, i + 1);
+  });
+  renderPath(); renderSwath(); updateStats();
+  if (pts.length && map) {
+    map.fitBounds(
+      pts.map(function (p) { return [p.lat, p.lng]; }),
+      { padding: [40, 40], maxZoom: 16 }
+    );
+  }
+  setStatus('✓ Imported ' + name + ' — ' + pts.length + ' waypoints', 'ready');
+  toast('Imported! ' + pts.length + ' waypoints', '✓');
+}
+
+// ── EXPORT KMZ ────────────────────────────────────────────────────────────
+function exportKMZ() {
+  if (pts.length < 2) { toast('Draw a flight path first!', '⚠'); return; }
+
+  var sw = swathFt(fov, altFt), swm = sw * 0.3048, altM = altFt * 0.3048;
+  var date = new Date().toISOString().slice(0, 10);
+
+  var pathCoords = pts.map(function (p) {
+    return p.lng + ',' + p.lat + ',' + altM.toFixed(1);
+  }).join('\n              ');
+
+  var halfM = swm / 2, left2 = [], right2 = [];
+  for (var i = 0; i < pts.length - 1; i++) {
+    var A = pts[i], B = pts[i+1], br = bearing(A.lat, A.lng, B.lat, B.lng);
+    var AL = geoOffset(A.lat, A.lng, halfM, (br-90+360)%360);
+    var AR = geoOffset(A.lat, A.lng, halfM, (br+90)%360);
+    var BL = geoOffset(B.lat, B.lng, halfM, (br-90+360)%360);
+    var BR = geoOffset(B.lat, B.lng, halfM, (br+90)%360);
+    if (i === 0) { left2.push(AL); right2.push(AR); }
+    left2.push(BL); right2.push(BR);
+  }
+  var ring2 = left2.concat(right2.slice().reverse());
+  ring2.push(ring2[0]);
+  var swathCoords = ring2.map(function (p) { return p.lng + ',' + p.lat + ',0'; }).join('\n              ');
+
+  var wpPM = pts.map(function (p, i) {
+    var n = String(i+1).padStart ? String(i+1).padStart(3,'0') : (i<9?'00':'0')+(i+1);
+    return '\n    <Placemark>\n      <name>WP' + n + '</name>\n' +
+           '      <description>Waypoint '+(i+1)+' | '+altFt+'ft AGL</description>\n' +
+           '      <styleUrl>#wpStyle</styleUrl>\n      <Point>\n' +
+           '        <altitudeMode>relativeToGround</altitudeMode>\n' +
+           '        <coordinates>'+p.lng+','+p.lat+','+altM.toFixed(1)+'</coordinates>\n' +
+           '      </Point>\n    </Placemark>';
+  }).join('');
+
+  var dist = 0;
+  for (var j = 1; j < pts.length; j++)
+    dist += havKm(pts[j-1].lat, pts[j-1].lng, pts[j].lat, pts[j].lng);
+  var ha = (dist * 1000 * swm) / 10000;
+
+  var colMap = { 60: 'ff76e600', 70: 'ff00b3ff', 90: 'ff5a3dff' };
+  var kmlCol  = colMap[fov] || 'ff76e600';
+  var fillCol = kmlCol.replace(/^../, '44');
+
+  var kml =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n' +
+    '  <name>Skyphor LiDAR Mission ' + date + '</name>\n' +
+    '  <description>FOV: '+fov+'° | Alt: '+altFt+'ft | Swath: '+Math.round(sw)+'ft / '+swm.toFixed(1)+'m | Dist: '+dist.toFixed(2)+'km | Area: '+ha.toFixed(2)+'ha</description>\n' +
+    '  <Style id="pathStyle"><LineStyle><color>ff2b6bff</color><width>3</width></LineStyle><PolyStyle><fill>0</fill></PolyStyle></Style>\n' +
+    '  <Style id="swathStyle"><LineStyle><color>'+kmlCol+'</color><width>2</width></LineStyle><PolyStyle><color>'+fillCol+'</color><fill>1</fill><outline>1</outline></PolyStyle></Style>\n' +
+    '  <Style id="wpStyle"><IconStyle><scale>0.7</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/wht-circle.png</href></Icon></IconStyle></Style>\n' +
+    '  <Folder>\n    <name>Flight Path</name>\n' +
+    '    <Placemark>\n      <name>Flight Line '+fov+'deg '+altFt+'ft</name>\n' +
+    '      <styleUrl>#pathStyle</styleUrl>\n      <LineString>\n        <tessellate>1</tessellate>\n' +
+    '        <altitudeMode>relativeToGround</altitudeMode>\n        <coordinates>\n              ' +
+    pathCoords + '\n        </coordinates>\n      </LineString>\n    </Placemark>\n' +
+    wpPM + '\n  </Folder>\n' +
+    '  <Folder>\n    <name>LiDAR Coverage '+fov+'deg '+Math.round(sw)+'ft</name>\n' +
+    '    <Placemark>\n      <name>Swath Footprint</name>\n' +
+    '      <description>FOV '+fov+'deg | Half-angle '+fov/2+'deg | Width '+Math.round(sw)+'ft ('+swm.toFixed(1)+'m) | Area '+ha.toFixed(2)+' ha</description>\n' +
+    '      <styleUrl>#swathStyle</styleUrl>\n      <Polygon>\n        <tessellate>1</tessellate>\n' +
+    '        <altitudeMode>clampToGround</altitudeMode>\n        <outerBoundaryIs>\n          <LinearRing>\n' +
+    '            <coordinates>\n              ' + swathCoords + '\n            </coordinates>\n' +
+    '          </LinearRing>\n        </outerBoundaryIs>\n      </Polygon>\n    </Placemark>\n  </Folder>\n' +
+    '</Document>\n</kml>';
+
+  JSZip.loadAsync ? null : null; // JSZip present check
+  var zip = new JSZip();
+  zip.file('doc.kml', kml);
+  zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }).then(function (blob) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'skyphor_' + fov + 'fov_' + altFt + 'ft_' + date + '.kmz';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    setStatus('KMZ exported — ' + pts.length + ' WPs · ' + dist.toFixed(2) + 'km · ' + ha.toFixed(2) + 'ha', 'ready');
+    toast('Exported! ' + pts.length + ' WPs · ' + dist.toFixed(2) + 'km', '⬇');
+  });
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────
+function doSearch(q) {
+  var sr = el('srch-res');
+  if (!sr) return;
+  if (!q.trim()) { sr.style.display = 'none'; return; }
   sr.style.display = 'block';
   sr.innerHTML = '<div class="s-load">Searching…</div>';
-  try {
-    const res  = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5`,{headers:{'Accept-Language':'en'}});
-    const data = await res.json();
-    if (!data.length) { sr.innerHTML='<div class="s-load">No results</div>'; return; }
-    sr.innerHTML='';
-    data.forEach(item => {
-      const parts = item.display_name.split(', ');
-      const div   = Object.assign(document.createElement('div'),{className:'s-item'});
-      div.innerHTML = `<span>📍</span><span>${parts.slice(0,3).join(', ')}</span>`;
-      div.onclick = () => {
-        const bb = item.boundingbox;
-        if (bb) map.fitBounds([[+bb[0],+bb[2]],[+bb[1],+bb[3]]],{maxZoom:16});
-        else    map.setView([+item.lat,+item.lon],14);
-        sr.style.display='none';
-        si.value = parts.slice(0,2).join(', ');
-        setStatus(`Viewing: ${parts[0]}`, 'ready');
+  fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(q) + '&format=json&limit=5',
+    { headers: { 'Accept-Language': 'en' } }
+  ).then(function (r) { return r.json(); }).then(function (data) {
+    if (!data.length) { sr.innerHTML = '<div class="s-load">No results</div>'; return; }
+    sr.innerHTML = '';
+    data.forEach(function (item) {
+      var parts = item.display_name.split(', ');
+      var div = document.createElement('div');
+      div.className = 's-item';
+      div.innerHTML = '<span>📍</span><span>' + parts.slice(0,3).join(', ') + '</span>';
+      div.onclick = function () {
+        var bb = item.boundingbox;
+        if (bb && map) map.fitBounds([[+bb[0],+bb[2]],[+bb[1],+bb[3]]], { maxZoom: 16 });
+        else if (map) map.setView([+item.lat, +item.lon], 14);
+        sr.style.display = 'none';
+        var si = el('srch-in'); if (si) si.value = parts.slice(0,2).join(', ');
+        setStatus('Viewing: ' + parts[0], 'ready');
       };
       sr.appendChild(div);
     });
-  } catch { sr.innerHTML='<div class="s-load">Search unavailable</div>'; }
+  }).catch(function () { sr.innerHTML = '<div class="s-load">Search unavailable</div>'; });
 }
 
-si.addEventListener('input',()=>{ clearTimeout(srchT); srchT=setTimeout(()=>doSearch(si.value),380); });
-si.addEventListener('keydown',e=>{
-  if (e.key==='Enter') { clearTimeout(srchT); doSearch(si.value); }
-  if (e.key==='Escape') sr.style.display='none';
+// ═══════════════════════════════════════════════════════════════════════
+// MAP INIT — inside window.addEventListener('load') so Leaflet (L) is
+// guaranteed to be defined before L.map() is called.
+// Everything above is already at global scope and works from onclick="".
+// ═══════════════════════════════════════════════════════════════════════
+window.addEventListener('load', function () {
+
+  map = L.map('map', {
+    center: [39.5, -98.5], zoom: 5,
+    zoomControl: true, doubleClickZoom: false
+  });
+
+  TILES = {
+    sat: L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles &copy; Esri &mdash; Maxar, Earthstar Geographics', maxZoom: 20, maxNativeZoom: 19 }
+    ),
+    street: L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles &copy; Esri', maxZoom: 20, maxNativeZoom: 19 }
+    ),
+    topo: L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles &copy; Esri', maxZoom: 20, maxNativeZoom: 19 }
+    )
+  };
+  TILES.sat.addTo(map);
+
+  // Map click — place waypoint
+  map.on('click', function (e) {
+    if (!drawing) return;
+    var p = { lat: e.latlng.lat, lng: e.latlng.lng };
+    pts.push(p);
+    addMarker(p, pts.length);
+    renderPath(); renderSwath(); updateStats();
+    setStatus('WP ' + pts.length + ' placed — click to add more, double-click to finish', 'active');
+  });
+
+  // Double-click — end path
+  map.on('dblclick', function (e) {
+    if (!drawing || pts.length < 2) return;
+    L.DomEvent.stop(e);
+    if (preview) { map.removeLayer(preview); preview = null; }
+    setMode('pan');
+    toast('Path complete! Export KMZ when ready.', '✓');
+  });
+
+  // Mouse move — rubber-band preview + coordinate display
+  map.on('mousemove', function (e) {
+    var tip = el('ctip');
+    if (tip) { tip.textContent = e.latlng.lat.toFixed(5) + '° N   ' + e.latlng.lng.toFixed(5) + '° E'; tip.style.display = 'block'; }
+    if (!drawing || !pts.length) return;
+    var last = pts[pts.length - 1];
+    var lls = [[last.lat, last.lng], [e.latlng.lat, e.latlng.lng]];
+    if (preview) preview.setLatLngs(lls);
+    else preview = L.polyline(lls, { color: FOV_COLOR[fov], weight: 1.5, dashArray: '6 4', opacity: 0.55 }).addTo(map);
+  });
+
+  map.on('mouseout', function () {
+    var tip = el('ctip'); if (tip) tip.style.display = 'none';
+    if (preview) { map.removeLayer(preview); preview = null; }
+  });
+
+  // Search input wiring
+  var si = el('srch-in'), sr = el('srch-res');
+  if (si) {
+    si.addEventListener('input', function () {
+      clearTimeout(srchTimer);
+      srchTimer = setTimeout(function () { doSearch(si.value); }, 380);
+    });
+    si.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { clearTimeout(srchTimer); doSearch(si.value); }
+      if (e.key === 'Escape' && sr) sr.style.display = 'none';
+    });
+  }
+  document.addEventListener('click', function (e) {
+    if (sr && !e.target.closest('#map-search')) sr.style.display = 'none';
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function (e) {
+    if (document.activeElement.tagName === 'INPUT') return;
+    if (e.key === 'd' || e.key === 'D') setMode('draw');
+    if (e.key === 'p' || e.key === 'P') setMode('pan');
+    if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undoLast(); }
+    if (e.key === 'Escape') setMode('pan');
+    if (e.key === '1') setFOV(60);
+    if (e.key === '2') setFOV(70);
+    if (e.key === '3') setFOV(90);
+  });
+
+  // Init UI
+  updateSwath();
+  updateStats();
+  setMode('draw');
+  setTimeout(function () { toast('Satellite map loaded — draw your LiDAR flight path!', '🛸'); }, 500);
 });
-document.addEventListener('click',e=>{ if (!e.target.closest('#map-search')) sr.style.display='none'; });
-
-// ═══════════════════════════════════════════════════
-// STATUS / TOAST
-// ═══════════════════════════════════════════════════
-function setStatus(msg, type) {
-  document.getElementById('s-txt').textContent = msg;
-  document.getElementById('s-dot').className   = type||'';
-}
-let toastT=null;
-function toast(msg,ico='✓') {
-  const el=document.getElementById('toast');
-  el.textContent=`${ico}  ${msg}`;
-  el.classList.add('show');
-  clearTimeout(toastT);
-  toastT=setTimeout(()=>el.classList.remove('show'),2800);
-}
-
-// ═══════════════════════════════════════════════════
-// KEYBOARD
-// ═══════════════════════════════════════════════════
-document.addEventListener('keydown',e=>{
-  if (document.activeElement.tagName==='INPUT') return;
-  if (e.key==='d'||e.key==='D') setMode('draw');
-  if (e.key==='p'||e.key==='P') setMode('pan');
-  if ((e.key==='z')&&(e.ctrlKey||e.metaKey)){e.preventDefault();undoLast();}
-  if (e.key==='Escape') setMode('pan');
-  if (e.key==='1') setFOV(60);
-  if (e.key==='2') setFOV(70);
-  if (e.key==='3') setFOV(90);
-});
-
-// ═══════════════════════════════════════════════════
-// INIT
-// ═══════════════════════════════════════════════════
-updateSwath();
-updateStats();
-setMode('draw');
-setTimeout(()=>toast('Google Maps loaded — draw your LiDAR flight path!','🛸'),600);
 </script>
 </body>
 </html>
