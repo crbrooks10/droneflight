@@ -1,0 +1,144 @@
+# 🛸 Skyphor — LiDAR Mission Planner
+
+**presented by Charlie Brooks**
+
+A standalone, browser-based LiDAR drone mission planning tool. No installation, no server, no API keys required — open `index.html` and fly.
+
+---
+
+## ✨ Features
+
+### ✏️ Flight Path Planning
+- Click-to-draw waypoint paths on a live satellite/street/terrain map
+- Draggable waypoint markers with real-time path and swath updates
+- Rubber-band preview line while drawing
+- Undo last point · Clear all · Double-click to finish path
+
+### 📡 LiDAR Swath Visualization
+- Three FOV modes: **60° Narrow · 70° Medium · 90° Wide**
+- Live corridor polygon with rounded end-caps and accurate turn geometry
+- Swath width auto-calculated from altitude and FOV angle
+- Live HUD: swath width, FOV, altitude, speed
+
+### ⏸ Waypoint Dwell Pause
+- Set **2s / 5s / 8s** hover at every waypoint
+- Embedded as `gx:Wait` tags in exported KMZ (recognized by Google Earth and compatible GCS software)
+- Mission time estimate includes dwell overhead
+
+### 📊 Mission Stats
+- Waypoint count, total path distance (km), LiDAR coverage area (ha), estimated flight time
+
+### ⬇️ Export
+- **Google Earth KMZ** — flight path + LiDAR swath polygon, opens directly in Google Earth
+- Filename includes FOV, altitude, pause duration, and date
+
+### ⬆️ Import
+- Drag-and-drop or file-picker import of `.kmz` and `.kml` files
+- Parses LineString, Point placemarks, and raw coordinate blocks
+
+### 🌤 Weather Briefing
+- 7-day forecast panel powered by [Open-Meteo](https://open-meteo.com/) (free, no key)
+- Auto-detects your location via browser geolocation
+- City search via Nominatim
+- **Flight suitability badge** — evaluates wind, gusts, precipitation, and weather code
+- Per-day fly / caution / no-fly indicators
+
+### ✈️ Sectional Chart & Airspace
+- FAA/Esri World Navigation Charts tile layer
+- OpenAIP airspace overlay (Class B/C/D/E, TFRs, MOAs, Prohibited/Restricted, UAS Facility Maps)
+- Independent opacity sliders for chart and airspace layers
+- Click-to-inspect FAA airspace at any map point
+- Toggle individual airspace classes on/off
+
+### 🗺 Map Layers
+- Satellite (Esri/Maxar)
+- Street (Esri World Street)
+- Terrain/Topo (Esri World Topo)
+- FAA Sectional Chart
+
+### 🔍 Location Search
+- Nominatim-powered search — no API key required
+
+---
+
+## 🚀 Quick Start
+
+### Option 1 — Open locally
+```
+Download index.html → open in any modern browser
+```
+
+### Option 2 — GitHub Pages (recommended)
+1. Fork or clone this repo
+2. Go to **Settings → Pages**
+3. Set source to `main` branch, `/ (root)`
+4. Your planner will be live at `https://yourusername.github.io/skyphor/`
+
+### Option 3 — Any static host
+Upload `index.html` to Netlify, Vercel, Cloudflare Pages, or any static host. No build step needed.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `D` | Draw mode |
+| `P` | Pan mode |
+| `1` | FOV 60° |
+| `2` | FOV 70° |
+| `3` | FOV 90° |
+| `Ctrl+Z` | Undo last waypoint |
+| `Escape` | Switch to pan mode |
+| `S` | Toggle sectional chart panel |
+
+---
+
+## 🛠 Tech Stack
+
+| Component | Library / Source |
+|-----------|-----------------|
+| Map | [Leaflet](https://leafletjs.com/) 1.9.4 |
+| KMZ packaging | [JSZip](https://stuk.github.io/jszip/) 3.10.1 |
+| Satellite tiles | Esri World Imagery (ArcGIS) |
+| Sectional charts | FAA AeroNav via Esri World Navigation Charts |
+| Airspace overlay | [OpenAIP](https://www.openaip.net/) public tiles |
+| Weather data | [Open-Meteo](https://open-meteo.com/) — free, no key |
+| Geocoding / search | [Nominatim](https://nominatim.org/) — free, no key |
+| Fonts | Google Fonts — Barlow Condensed + JetBrains Mono |
+
+**Zero backend. Zero API keys. One HTML file.**
+
+---
+
+## 📁 Repository Structure
+
+```
+skyphor/
+├── index.html      # Complete application — everything in one file
+├── README.md       # This file
+├── LICENSE         # MIT License
+└── .gitignore      # Standard web gitignore
+```
+
+---
+
+## ⚠️ Disclaimer
+
+Skyphor is a planning and visualization aid only. Always verify airspace, weather, and flight regulations with official sources before flying:
+
+- [FAA B4UFLY](https://www.faa.gov/uas/recreational_fliers/where_can_i_fly/b4ufly/)
+- [SkyVector](https://skyvector.com/)
+- [AirMap](https://airmap.com/)
+
+The creator is not responsible for any flight violations or incidents resulting from use of this tool.
+
+---
+
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+*Created by Charlie Brooks (https://github.com)*
