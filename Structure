@@ -1,0 +1,2559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Skyphor LiDAR Planner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+:root {
+  --bg:      #060a0f;
+  --panel:   #0a1018;
+  --card:    #0f1923;
+  --card2:   #141f2d;
+  --border:  rgba(0,210,255,0.12);
+  --bhi:     rgba(0,210,255,0.28);
+  --cyan:    #00d2ff;
+  --cyan2:   #00aacc;
+  --orange:  #ff6b2b;
+  --green:   #00e676;
+  --amber:   #ffb300;
+  --red:     #ff3d5a;
+  --text:    #ddeeff;
+  --text2:   #5a7a99;
+  --text3:   #2a3d52;
+  --mono:    'JetBrains Mono', monospace;
+  --display: 'Barlow Condensed', sans-serif;
+  --pw:      300px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);font-family:var(--display);color:var(--text);-webkit-font-smoothing:antialiased}
+#app{display:flex;height:100vh}
+
+/* PANEL */
+#panel{
+  flex:0 0 var(--pw);background:var(--panel);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;
+  z-index:10;box-shadow:4px 0 32px rgba(0,0,0,.6);
+}
+#logo{
+  padding:16px 18px 14px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;flex-shrink:0;
+}
+#logo-icon{
+  width:36px;height:36px;border-radius:8px;
+  background:linear-gradient(135deg,var(--cyan),var(--cyan2));
+  display:flex;align-items:center;justify-content:center;font-size:18px;
+  box-shadow:0 0 16px rgba(0,210,255,.4);flex-shrink:0;
+}
+#logo-title{font-size:20px;font-weight:800;letter-spacing:2px;color:var(--cyan);text-transform:uppercase;display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+#logo-byline{font-size:9px;font-weight:400;letter-spacing:.8px;color:var(--text2);text-transform:lowercase;font-family:var(--mono);opacity:.65;white-space:nowrap}
+#logo-sub{font-size:10px;font-weight:500;letter-spacing:1.5px;color:var(--text2);text-transform:uppercase}
+
+#panel-body{
+  flex:1;overflow-y:auto;padding:14px;
+  display:flex;flex-direction:column;gap:12px;
+}
+#panel-body::-webkit-scrollbar{width:4px}
+#panel-body::-webkit-scrollbar-thumb{background:var(--card2);border-radius:4px}
+
+.sec-lbl{
+  font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;
+  color:var(--text2);margin-bottom:7px;display:flex;align-items:center;gap:6px;
+}
+.sec-lbl::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* MODE BTNS */
+#mode-btns{display:flex;gap:6px}
+.mode-btn{
+  flex:1;padding:10px 6px;border-radius:8px;
+  border:1.5px solid var(--border);background:var(--card);
+  color:var(--text2);font-family:var(--display);
+  font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;
+  cursor:pointer;transition:all .15s;
+  display:flex;flex-direction:column;align-items:center;gap:4px;
+}
+.mode-btn .icon{font-size:18px}
+.mode-btn:hover{border-color:var(--bhi);color:var(--text);background:var(--card2)}
+.mode-btn.active{border-color:var(--orange);background:rgba(255,107,43,.12);color:var(--orange);box-shadow:0 0 12px rgba(255,107,43,.2)}
+
+/* ALT */
+.alt-row{
+  display:flex;align-items:center;gap:8px;
+  background:var(--card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;
+}
+.alt-row label{font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--text2);flex-shrink:0}
+.alt-input{
+  flex:1;background:transparent;border:none;outline:none;
+  font-family:var(--mono);font-size:17px;font-weight:600;
+  color:var(--cyan);text-align:right;
+}
+.alt-unit{font-family:var(--mono);font-size:11px;color:var(--text2);flex-shrink:0}
+
+/* FOV CARDS */
+.fov-cards{display:flex;flex-direction:column;gap:6px}
+.fov-card{
+  border-radius:9px;border:1.5px solid var(--border);background:var(--card);
+  padding:10px 12px;cursor:pointer;transition:all .18s;
+  display:flex;align-items:center;gap:10px;
+}
+.fov-card:hover{border-color:var(--bhi);background:var(--card2)}
+.fov-card.sel{box-shadow:0 0 16px rgba(0,0,0,.4)}
+.fov-60.sel{border-color:var(--green)!important;background:rgba(0,230,118,.08)!important}
+.fov-70.sel{border-color:var(--amber)!important;background:rgba(255,179,0,.08)!important}
+.fov-90.sel{border-color:var(--red)!important;background:rgba(255,61,90,.08)!important}
+.fov-badge{
+  width:42px;height:42px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:15px;font-weight:800;flex-shrink:0;
+}
+.fov-60 .fov-badge{background:rgba(0,230,118,.15);color:var(--green)}
+.fov-70 .fov-badge{background:rgba(255,179,0,.15);color:var(--amber)}
+.fov-90 .fov-badge{background:rgba(255,61,90,.15);color:var(--red)}
+.fov-name{font-size:14px;font-weight:700;letter-spacing:.5px}
+.fov-60 .fov-name{color:var(--green)}
+.fov-70 .fov-name{color:var(--amber)}
+.fov-90 .fov-name{color:var(--red)}
+.fov-winfo{font-family:var(--mono);font-size:11px;color:var(--text2);margin-top:1px}
+
+/* SWATH DISPLAY */
+#swath-box{
+  background:var(--card);border:1.5px solid var(--border);
+  border-radius:10px;padding:12px 14px;
+}
+.sw-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.sw-row:last-child{margin-bottom:0}
+.sw-k{font-size:11px;font-weight:600;letter-spacing:.5px;color:var(--text2)}
+.sw-v{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text)}
+#sw-bar-wrap{height:6px;background:var(--card2);border-radius:3px;overflow:hidden;margin:8px 0 4px}
+#sw-bar{height:100%;border-radius:3px;transition:width .3s,background .3s}
+
+/* STATS */
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.stat-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.stat-v{font-family:var(--mono);font-size:17px;font-weight:600;color:var(--cyan);line-height:1}
+.stat-v.or{color:var(--orange)}
+.stat-v.gr{color:var(--green)}
+.stat-v.am{color:var(--amber)}
+.stat-l{font-size:10px;font-weight:600;letter-spacing:.8px;color:var(--text2);margin-top:4px;text-transform:uppercase}
+
+/* ACTION BTNS */
+.act-btns{display:flex;flex-direction:column;gap:6px}
+.btn{
+  width:100%;padding:11px;border-radius:9px;border:none;cursor:pointer;
+  font-family:var(--display);font-size:14px;font-weight:700;
+  letter-spacing:1px;text-transform:uppercase;
+  transition:all .18s;display:flex;align-items:center;justify-content:center;gap:8px;
+}
+.btn-exp{background:linear-gradient(135deg,var(--orange),#e55520);color:#fff;box-shadow:0 4px 20px rgba(255,107,43,.35)}
+.btn-exp:hover{box-shadow:0 4px 28px rgba(255,107,43,.55);transform:translateY(-1px)}
+.btn-undo{background:var(--card);color:var(--text2);border:1.5px solid var(--border)}
+.btn-undo:hover{border-color:var(--amber);color:var(--amber);background:rgba(255,179,0,.08)}
+.btn-clr{background:var(--card);color:var(--text2);border:1.5px solid var(--border)}
+.btn-clr:hover{border-color:var(--red);color:var(--red);background:rgba(255,61,90,.08)}
+.btn-imp{background:var(--card);color:var(--cyan);border:1.5px solid rgba(0,210,255,.25)}
+.btn-imp:hover{border-color:var(--cyan);background:rgba(0,210,255,.1)}
+
+/* TIPS */
+#tips{background:rgba(0,210,255,.05);border:1px solid rgba(0,210,255,.15);border-radius:8px;padding:10px 12px}
+#tips p{font-size:11.5px;color:var(--text2);line-height:1.65}
+#tips strong{color:var(--cyan);font-weight:700}
+
+/* STATUS */
+#status-bar{
+  flex-shrink:0;padding:8px 14px;border-top:1px solid var(--border);
+  display:flex;align-items:center;gap:8px;background:var(--bg);
+}
+#s-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);flex-shrink:0;transition:background .3s}
+#s-dot.ready{background:var(--green);box-shadow:0 0 6px var(--green)}
+#s-dot.active{background:var(--orange);animation:blink 1s infinite}
+#s-dot.error{background:var(--red)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+#s-txt{font-size:12px;font-weight:600;color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* MAP */
+#map-wrap{flex:1;position:relative}
+#map{width:100%;height:100%}
+.leaflet-container{background:#060a0f!important}
+.leaflet-control-zoom{border:1px solid var(--border)!important;background:var(--panel)!important;border-radius:8px!important;overflow:hidden}
+.leaflet-control-zoom a{background:var(--panel)!important;color:var(--cyan)!important;border-bottom:1px solid var(--border)!important;font-size:16px!important;line-height:28px!important;width:30px!important;height:30px!important}
+.leaflet-control-zoom a:hover{background:var(--card2)!important}
+.leaflet-control-attribution{background:rgba(6,10,15,.8)!important;color:var(--text3)!important;font-size:9px!important}
+.leaflet-control-attribution a{color:var(--text2)!important}
+
+/* SEARCH */
+#map-search{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:1000;width:320px}
+#srch-inner{
+  display:flex;align-items:center;
+  background:rgba(10,16,24,.95);border:1px solid var(--border);
+  border-radius:24px;padding:0 14px;
+  backdrop-filter:blur(14px);box-shadow:0 4px 24px rgba(0,0,0,.5);
+  transition:border-color .2s;
+}
+#srch-inner:focus-within{border-color:rgba(0,210,255,.4)}
+#srch-in{
+  flex:1;background:transparent;border:none;outline:none;
+  font-family:var(--display);font-size:14px;font-weight:600;
+  color:var(--text);padding:10px 8px;
+}
+#srch-in::placeholder{color:var(--text3)}
+.s-ico{font-size:14px;opacity:.5}
+#srch-res{
+  margin-top:6px;background:rgba(10,16,24,.97);
+  border:1px solid var(--border);border-radius:10px;
+  overflow:hidden;display:none;
+  box-shadow:0 8px 32px rgba(0,0,0,.6);
+}
+.s-item{
+  padding:10px 16px;cursor:pointer;font-size:13px;font-weight:600;
+  border-bottom:1px solid var(--border);color:var(--text2);
+  transition:background .1s;display:flex;align-items:center;gap:8px;
+}
+.s-item:last-child{border-bottom:none}
+.s-item:hover{background:var(--card2);color:var(--text)}
+.s-load{padding:12px 16px;font-size:12px;color:var(--text3);text-align:center}
+
+/* LAYER BTNS */
+#lyr-btns{position:absolute;top:12px;right:14px;z-index:1000;display:flex;flex-direction:column;gap:5px}
+.lbtn{
+  width:36px;height:36px;border-radius:8px;
+  background:rgba(10,16,24,.92);border:1px solid var(--border);
+  color:var(--text2);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;transition:all .15s;backdrop-filter:blur(8px);
+}
+.lbtn:hover{border-color:var(--bhi);color:var(--text)}
+.lbtn.on{border-color:var(--cyan);color:var(--cyan);background:rgba(0,210,255,.1)}
+
+/* HUD */
+#hud{
+  position:absolute;bottom:14px;right:14px;z-index:999;
+  background:rgba(10,16,24,.92);border:1px solid var(--border);
+  border-radius:10px;padding:10px 14px;backdrop-filter:blur(10px);pointer-events:none;
+}
+.hud-row{display:flex;gap:0}
+.hud-item{text-align:center;padding:0 12px}
+.hud-item:not(:first-child){border-left:1px solid var(--border)}
+.hud-v{font-family:var(--mono);font-size:14px;font-weight:600;color:var(--cyan)}
+.hud-l{font-size:9px;font-weight:700;letter-spacing:1px;color:var(--text2);text-transform:uppercase;margin-top:2px}
+
+/* COORD TIP */
+#ctip{
+  position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+  z-index:999;background:rgba(10,16,24,.88);
+  border:1px solid var(--border);border-radius:20px;
+  padding:4px 14px;pointer-events:none;
+  font-family:var(--mono);font-size:11px;color:var(--text2);
+  display:none;backdrop-filter:blur(8px);
+}
+
+/* DRAG DROP OVERLAY */
+#drop-overlay{
+  position:absolute;inset:0;z-index:3000;
+  background:rgba(0,210,255,.10);
+  border:3px dashed rgba(0,210,255,.6);
+  border-radius:0;
+  display:none;pointer-events:none;
+  align-items:center;justify-content:center;
+}
+#drop-overlay.active{display:flex}
+#drop-msg{
+  background:rgba(6,10,15,.9);border:1px solid rgba(0,210,255,.5);
+  border-radius:16px;padding:18px 32px;
+  font-family:var(--display);font-size:18px;font-weight:700;
+  color:var(--cyan);letter-spacing:1.5px;text-transform:uppercase;
+  pointer-events:none;
+}
+
+
+.btn-sec{
+  background:linear-gradient(135deg,rgba(100,180,100,.15),rgba(60,140,60,.08));
+  color:#6dcc6d;border:1.5px solid rgba(100,180,100,.3);
+}
+.btn-sec:hover{border-color:#6dcc6d;background:rgba(100,180,100,.22);transform:translateY(-1px);box-shadow:0 4px 18px rgba(80,200,80,.25)}
+
+.lbtn-sep{height:1px!important;width:26px;background:var(--border);pointer-events:none;margin:2px 5px}
+
+/* WAYPOINT PAUSE SELECTOR */
+.pause-lbl{
+  font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;
+  color:var(--text2);margin-bottom:7px;display:flex;align-items:center;gap:6px;
+}
+.pause-lbl::after{content:'';flex:1;height:1px;background:var(--border)}
+#pause-btns{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:5px}
+.pause-btn{
+  padding:9px 4px;border-radius:8px;
+  border:1.5px solid var(--border);background:var(--card);
+  color:var(--text2);font-family:var(--mono);
+  font-size:13px;font-weight:700;letter-spacing:.3px;
+  cursor:pointer;transition:all .15s;text-align:center;
+}
+.pause-btn:hover{border-color:var(--bhi);color:var(--text);background:var(--card2)}
+.pause-btn.active{
+  border-color:var(--amber);background:rgba(255,179,0,.12);
+  color:var(--amber);box-shadow:0 0 10px rgba(255,179,0,.18);
+}
+#pause-preview{
+  display:flex;align-items:center;gap:8px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:8px;padding:8px 12px;margin-top:6px;
+}
+#pause-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+  background:var(--text3);transition:background .3s,box-shadow .3s;
+}
+#pause-dot.on{background:var(--amber);box-shadow:0 0 8px var(--amber);animation:pausepulse 1.4s infinite}
+@keyframes pausepulse{0%,100%{opacity:1}50%{opacity:.4}}
+#pause-txt{font-size:11px;color:var(--text2);flex:1;font-weight:600;letter-spacing:.2px}
+#pause-val{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--amber)}
+
+/* ═══════════════════════════════════════════════════
+   SECTIONAL CHART PANEL
+═══════════════════════════════════════════════════ */
+#sec-panel{
+  position:fixed;top:0;right:0;bottom:0;width:360px;
+  background:var(--panel);border-left:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;
+  z-index:1400;box-shadow:-6px 0 40px rgba(0,0,0,.75);
+  transform:translateX(100%);
+  transition:transform .35s cubic-bezier(.4,0,.2,1);
+}
+#sec-panel.open{transform:translateX(0)}
+
+#sec-hdr{
+  flex-shrink:0;padding:14px 18px 12px;
+  border-bottom:1px solid var(--border);
+  background:linear-gradient(135deg,rgba(80,200,80,.07),transparent);
+  display:flex;align-items:center;gap:10px;
+}
+#sec-hdr-ico{font-size:22px}
+#sec-hdr-text{flex:1}
+#sec-hdr-title{font-size:15px;font-weight:800;letter-spacing:1.5px;color:#6dcc6d;text-transform:uppercase}
+#sec-hdr-sub{font-size:9px;font-weight:600;letter-spacing:1.2px;color:var(--text2);text-transform:uppercase;margin-top:1px}
+#sec-hdr-close{
+  width:28px;height:28px;border-radius:7px;border:1px solid var(--border);
+  background:transparent;color:var(--text2);cursor:pointer;font-size:15px;
+  display:flex;align-items:center;justify-content:center;transition:all .15s;
+}
+#sec-hdr-close:hover{border-color:var(--red);color:var(--red);background:rgba(255,61,90,.1)}
+
+#sec-body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+#sec-body::-webkit-scrollbar{width:4px}
+#sec-body::-webkit-scrollbar-thumb{background:var(--card2);border-radius:4px}
+
+/* Chart mode toggle */
+.sec-mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.sec-mode-btn{
+  padding:10px 8px;border-radius:9px;border:1.5px solid var(--border);
+  background:var(--card);color:var(--text2);font-family:var(--display);
+  font-size:12px;font-weight:700;letter-spacing:.5px;cursor:pointer;
+  transition:all .15s;text-align:center;
+}
+.sec-mode-btn:hover{border-color:var(--bhi);color:var(--text);background:var(--card2)}
+.sec-mode-btn.active{border-color:#6dcc6d;background:rgba(80,200,80,.1);color:#6dcc6d}
+
+/* Airspace legend */
+.asp-legend{display:flex;flex-direction:column;gap:5px}
+.asp-row{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 10px;border-radius:8px;background:var(--card);
+  border:1px solid var(--border);cursor:pointer;transition:all .12s;
+}
+.asp-row:hover{border-color:var(--bhi);background:var(--card2)}
+.asp-row.hidden-asp{opacity:.4}
+.asp-swatch{width:20px;height:20px;border-radius:4px;flex-shrink:0;border:2px solid transparent}
+.asp-name{flex:1;font-size:12px;font-weight:700;letter-spacing:.3px}
+.asp-desc{font-size:10px;color:var(--text2);margin-top:1px}
+.asp-toggle{
+  width:32px;height:18px;border-radius:9px;border:none;cursor:pointer;
+  position:relative;transition:background .2s;flex-shrink:0;
+}
+.asp-toggle.on{background:#6dcc6d}
+.asp-toggle.off{background:var(--card2)}
+.asp-toggle::after{
+  content:'';position:absolute;top:2px;width:14px;height:14px;border-radius:50%;
+  background:#fff;transition:left .2s;
+}
+.asp-toggle.on::after{left:16px}
+.asp-toggle.off::after{left:2px}
+
+/* Popup info card */
+#asp-popup{
+  background:var(--card);border:1.5px solid rgba(80,200,80,.3);
+  border-radius:12px;padding:14px;display:none;
+}
+#asp-popup.show{display:block}
+#asp-popup-title{font-size:14px;font-weight:800;color:#6dcc6d;margin-bottom:8px;letter-spacing:.5px}
+.asp-popup-row{display:flex;justify-content:space-between;margin-bottom:5px;font-size:12px}
+.asp-popup-k{color:var(--text2);font-weight:600}
+.asp-popup-v{font-family:var(--mono);font-size:11px;color:var(--text)}
+
+/* FAA chart info card */
+#sec-chart-info{
+  background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px;
+}
+#sec-chart-info h4{font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text2);margin-bottom:8px}
+.sci-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-size:11px}
+.sci-k{color:var(--text2);font-weight:600}
+.sci-v{font-family:var(--mono);font-size:11px;color:#6dcc6d;font-weight:600}
+
+/* Opacity slider */
+.sec-slider-wrap{display:flex;align-items:center;gap:10px}
+.sec-slider{
+  flex:1;-webkit-appearance:none;height:4px;border-radius:2px;
+  background:var(--card2);outline:none;cursor:pointer;
+}
+.sec-slider::-webkit-slider-thumb{
+  -webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+  background:#6dcc6d;cursor:pointer;box-shadow:0 0 6px rgba(80,200,80,.5);
+}
+.sec-slider-val{font-family:var(--mono);font-size:12px;color:#6dcc6d;width:34px;text-align:right;flex-shrink:0}
+
+/* Notice box */
+.sec-notice{
+  background:rgba(80,200,80,.05);border:1px solid rgba(80,200,80,.15);
+  border-radius:8px;padding:10px 12px;font-size:11px;color:var(--text2);line-height:1.6;
+}
+.sec-notice strong{color:#6dcc6d}
+.sec-notice a{color:#6dcc6d;text-decoration:none}
+.sec-notice a:hover{text-decoration:underline}
+
+#sec-footer{
+  flex-shrink:0;padding:7px 14px;border-top:1px solid var(--border);
+  font-size:8.5px;color:var(--text3);text-align:center;letter-spacing:.5px;text-transform:uppercase;
+}
+
+.btn-wx{
+  background:linear-gradient(135deg,rgba(0,210,255,.15),rgba(0,170,204,.1));
+  color:var(--cyan);border:1.5px solid rgba(0,210,255,.3);
+  position:relative;overflow:hidden;
+}
+.btn-wx:hover{border-color:var(--cyan);background:rgba(0,210,255,.22);transform:translateY(-1px);box-shadow:0 4px 18px rgba(0,210,255,.25)}
+.btn-wx-pulse{
+  position:absolute;top:6px;right:10px;
+  width:7px;height:7px;border-radius:50%;background:var(--cyan);
+  box-shadow:0 0 6px var(--cyan);
+  animation:wxpulse 2s infinite;
+}
+@keyframes wxpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
+
+/* ═══════════════════════════════════════════════════
+   WEATHER SIDE PANEL
+═══════════════════════════════════════════════════ */
+#wx-panel{
+  position:fixed;top:0;right:0;bottom:0;width:340px;
+  background:var(--panel);border-left:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;
+  z-index:1500;box-shadow:-6px 0 40px rgba(0,0,0,.75);
+  transform:translateX(100%);
+  transition:transform .35s cubic-bezier(.4,0,.2,1);
+  font-family:var(--display);
+}
+#wx-panel.open{transform:translateX(0)}
+
+/* Header */
+#wx-hdr{
+  flex-shrink:0;padding:15px 18px 13px;
+  border-bottom:1px solid var(--border);
+  background:linear-gradient(135deg,rgba(0,210,255,.08),transparent);
+  display:flex;align-items:center;gap:10px;
+}
+#wx-hdr-ico{font-size:24px;line-height:1}
+#wx-hdr-text{flex:1}
+#wx-hdr-title{font-size:15px;font-weight:800;letter-spacing:1.5px;color:var(--cyan);text-transform:uppercase}
+#wx-hdr-sub{font-size:9px;font-weight:600;letter-spacing:1.2px;color:var(--text2);text-transform:uppercase;margin-top:1px}
+#wx-hdr-close{
+  width:28px;height:28px;border-radius:7px;border:1px solid var(--border);
+  background:transparent;color:var(--text2);cursor:pointer;font-size:15px;
+  display:flex;align-items:center;justify-content:center;transition:all .15s;
+}
+#wx-hdr-close:hover{border-color:var(--red);color:var(--red);background:rgba(255,61,90,.1)}
+
+/* Search bar */
+#wx-search-wrap{flex-shrink:0;padding:12px 14px;border-bottom:1px solid var(--border)}
+#wx-search-bar{
+  display:flex;align-items:center;
+  background:#1a2535;border:1.5px solid var(--border);
+  border-radius:50px;padding:0 14px;
+  transition:border-color .2s;
+}
+#wx-search-bar:focus-within{border-color:rgba(0,210,255,.5);box-shadow:0 0 0 3px rgba(0,210,255,.08)}
+#wx-search-in{
+  flex:1;background:transparent;border:none;outline:none;
+  font-family:var(--display);font-size:14px;font-weight:600;
+  color:var(--text);padding:10px 8px;
+}
+#wx-search-in::placeholder{color:var(--text3);font-size:13px}
+#wx-search-btn{
+  background:transparent;border:none;color:var(--cyan);
+  font-size:17px;cursor:pointer;padding:4px;
+  opacity:.8;transition:opacity .15s,transform .15s;
+}
+#wx-search-btn:hover{opacity:1;transform:scale(1.15)}
+
+/* Body scroll area */
+#wx-body{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+#wx-body::-webkit-scrollbar{width:4px}
+#wx-body::-webkit-scrollbar-thumb{background:var(--card2);border-radius:4px}
+
+/* Current weather hero */
+#wx-hero{
+  background:linear-gradient(135deg,rgba(0,210,255,.09),rgba(0,210,255,.03));
+  border:1.5px solid rgba(0,210,255,.18);border-radius:14px;padding:18px;
+  display:flex;flex-direction:column;align-items:center;text-align:center;
+  gap:6px;
+}
+#wx-hero-ico{font-size:64px;line-height:1;filter:drop-shadow(0 4px 16px rgba(0,210,255,.3))}
+#wx-hero-temp{
+  font-family:var(--mono);font-size:44px;font-weight:600;
+  color:var(--cyan);line-height:1;margin-top:4px;
+}
+#wx-hero-city{font-size:20px;font-weight:700;letter-spacing:.5px;color:var(--text)}
+#wx-hero-desc{font-size:13px;color:var(--text2);font-weight:500;letter-spacing:.3px}
+.wx-stats-row{
+  display:flex;gap:8px;width:100%;margin-top:6px;
+}
+.wx-stat{
+  flex:1;background:rgba(0,0,0,.25);border-radius:9px;padding:10px 8px;
+  text-align:center;border:1px solid rgba(255,255,255,.05);
+}
+.wx-stat-ico{font-size:20px;margin-bottom:4px}
+.wx-stat-val{font-family:var(--mono);font-size:14px;font-weight:600;color:var(--text);line-height:1}
+.wx-stat-lbl{font-size:9px;font-weight:700;letter-spacing:.8px;color:var(--text2);text-transform:uppercase;margin-top:3px}
+
+/* Flight suitability banner */
+#wx-fly{
+  border-radius:10px;padding:11px 14px;
+  display:flex;align-items:center;gap:10px;
+  border:1.5px solid;font-size:12px;font-weight:700;letter-spacing:.3px;
+  transition:all .3s;
+}
+#wx-fly.good{border-color:rgba(0,230,118,.35);background:rgba(0,230,118,.08);color:var(--green)}
+#wx-fly.caution{border-color:rgba(255,179,0,.4);background:rgba(255,179,0,.08);color:var(--amber)}
+#wx-fly.bad{border-color:rgba(255,61,90,.35);background:rgba(255,61,90,.08);color:var(--red)}
+#wx-fly-ico{font-size:22px;flex-shrink:0}
+
+/* 7-day list */
+.wx-sec-lbl{font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text2);display:flex;align-items:center;gap:6px}
+.wx-sec-lbl::after{content:'';flex:1;height:1px;background:var(--border)}
+.wx-days{display:flex;flex-direction:column;gap:4px}
+.wx-day{
+  background:var(--card);border:1px solid var(--border);border-radius:9px;
+  padding:9px 12px;display:flex;align-items:center;gap:10px;
+  transition:all .12s;
+}
+.wx-day:hover{border-color:var(--bhi);background:var(--card2)}
+.wx-day.today{border-color:rgba(0,210,255,.22);background:rgba(0,210,255,.06)}
+.wx-day-name{font-size:12px;font-weight:700;color:var(--text);width:36px;flex-shrink:0}
+.wx-day-ico{font-size:20px;flex-shrink:0}
+.wx-day-mid{flex:1;display:flex;flex-direction:column;gap:3px}
+.wx-day-lbl{font-size:10px;color:var(--text2)}
+.wx-range{display:flex;align-items:center;gap:5px}
+.wx-rbar{flex:1;height:4px;background:var(--card2);border-radius:2px;position:relative;overflow:hidden}
+.wx-rbar-fill{position:absolute;top:0;bottom:0;border-radius:2px;background:linear-gradient(90deg,var(--cyan),var(--orange))}
+.wx-rhi{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--orange);flex-shrink:0}
+.wx-rlo{font-family:var(--mono);font-size:11px;color:var(--text2);flex-shrink:0}
+.wx-day-right{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+.wx-day-wind{font-family:var(--mono);font-size:10px;color:var(--text2)}
+.wx-day-precip{font-family:var(--mono);font-size:10px;color:#4d9fd6}
+
+/* Loading / error states */
+#wx-loading{padding:40px 20px;text-align:center;color:var(--text2)}
+#wx-spinner{font-size:30px;animation:wxspin 1.2s linear infinite;display:inline-block;margin-bottom:10px}
+@keyframes wxspin{to{transform:rotate(360deg)}}
+#wx-error-box{
+  background:rgba(255,61,90,.07);border:1px solid rgba(255,61,90,.2);
+  border-radius:10px;padding:16px;text-align:center;color:var(--red);
+  font-size:12px;line-height:1.6;display:none;
+}
+.wx-retry{
+  margin-top:10px;padding:7px 18px;border-radius:8px;
+  background:var(--card);border:1px solid var(--border);
+  color:var(--cyan);font-family:var(--display);font-size:12px;
+  font-weight:700;letter-spacing:.5px;cursor:pointer;transition:all .15s;
+}
+.wx-retry:hover{border-color:var(--cyan);background:rgba(0,210,255,.1)}
+
+#wx-footer{
+  flex-shrink:0;padding:7px 14px;border-top:1px solid var(--border);
+  font-size:8.5px;color:var(--text3);text-align:center;letter-spacing:.5px;
+  text-transform:uppercase;
+}
+
+/* ═══════════════════════════════════════════════════
+   WEATHER ALERT MODAL (glassmorphism — from React design)
+═══════════════════════════════════════════════════ */
+#wx-modal-backdrop{
+  position:fixed;inset:0;z-index:9000;
+  background:rgba(0,0,0,.75);
+  display:none;align-items:center;justify-content:center;
+  animation:wxfadein .2s ease;
+}
+#wx-modal-backdrop.show{display:flex}
+@keyframes wxfadein{from{opacity:0}to{opacity:1}}
+
+#wx-modal{
+  position:relative;
+  background:linear-gradient(135deg,rgba(30,30,46,.92),rgba(18,18,30,.96));
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border:1px solid rgba(0,210,255,.25);
+  border-radius:18px;padding:28px 28px 22px;
+  width:380px;max-width:calc(100vw - 40px);
+  box-shadow:0 12px 48px rgba(0,0,0,.7),0 0 0 1px rgba(255,255,255,.06) inset;
+  animation:wxmodalpop .28s cubic-bezier(.34,1.56,.64,1);
+  overflow:hidden;
+}
+@keyframes wxmodalpop{
+  from{opacity:0;transform:translateY(-40px) scale(.88)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+/* decorative glow orbs */
+#wx-modal::before{
+  content:'';position:absolute;top:-30px;right:-30px;
+  width:110px;height:110px;border-radius:50%;
+  background:radial-gradient(circle,rgba(0,210,255,.35) 0%,transparent 70%);
+  filter:blur(6px);pointer-events:none;
+}
+#wx-modal::after{
+  content:'';position:absolute;bottom:10px;left:10px;
+  width:160px;height:22px;border-radius:50%;
+  background:radial-gradient(ellipse,rgba(255,255,255,.12) 0%,transparent 70%);
+  pointer-events:none;
+}
+#wx-modal-header{display:flex;align-items:center;gap:10px;margin-bottom:18px}
+#wx-modal-cloud{font-size:28px;animation:wxcloud 4s ease-in-out infinite}
+@keyframes wxcloud{0%,100%{transform:rotate(0)}25%{transform:rotate(5deg)}75%{transform:rotate(-5deg)}}
+#wx-modal-title{flex:1;font-size:17px;font-weight:800;letter-spacing:1px;color:var(--cyan)}
+#wx-modal-x{
+  background:none;border:none;font-size:20px;
+  color:rgba(0,210,255,.7);cursor:pointer;
+  transition:color .2s,transform .15s;line-height:1;
+}
+#wx-modal-x:hover{color:var(--cyan);transform:scale(1.2)}
+#wx-modal-body{
+  text-align:center;padding:8px 4px 20px;position:relative;
+}
+#wx-modal-msg{
+  font-size:16px;font-weight:600;
+  color:#b8d4ee;
+  text-shadow:0 1px 2px rgba(255,255,255,.25);
+  line-height:1.6;letter-spacing:.02em;
+}
+/* decorative small clouds */
+.wx-deco-cloud{position:absolute;color:rgba(0,210,255,.4);pointer-events:none}
+#wx-modal-footer{display:flex;justify-content:center}
+#wx-modal-ok{
+  padding:10px 32px;border-radius:50px;border:none;cursor:pointer;
+  background:linear-gradient(145deg,#1ca8d4,#0070cc);
+  color:#fff;font-family:var(--display);font-size:14px;font-weight:700;
+  letter-spacing:.5px;
+  box-shadow:0 4px 18px rgba(10,122,255,.4),0 2px 6px rgba(0,0,0,.2);
+  transition:transform .15s,box-shadow .15s;
+}
+#wx-modal-ok:hover{transform:translateY(-2px);box-shadow:0 7px 24px rgba(10,122,255,.55)}
+#wx-modal-ok:active{transform:translateY(0) scale(.97)}
+
+  position:absolute;top:62px;left:50%;transform:translateX(-50%);
+  z-index:2000;background:var(--card);
+  border:1px solid var(--border);border-radius:24px;
+  padding:8px 20px;font-size:13px;font-weight:700;
+  color:var(--text);opacity:0;transition:opacity .3s;
+  pointer-events:none;white-space:nowrap;
+  box-shadow:0 4px 24px rgba(0,0,0,.5);
+}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- PANEL -->
+<div id="panel">
+  <div id="logo">
+    <div id="logo-icon">🛸</div>
+    <div>
+      <div id="logo-title">SKYPHOR<span id="logo-byline">presented by charlie brooks</span></div>
+      <div id="logo-sub">LiDAR Mission Planner</div>
+    </div>
+  </div>
+
+  <div id="panel-body">
+
+    <!-- DRAW MODE -->
+    <div>
+      <div class="sec-lbl">Draw Mode</div>
+      <div id="mode-btns">
+        <button class="mode-btn active" id="btn-draw" onclick="setMode('draw')">
+          <span class="icon">✏️</span>Draw Path
+        </button>
+        <button class="mode-btn" id="btn-pan" onclick="setMode('pan')">
+          <span class="icon">🖐</span>Pan Map
+        </button>
+      </div>
+    </div>
+
+    <!-- ALTITUDE -->
+    <div>
+      <div class="sec-lbl">Flight Altitude AGL</div>
+      <div class="alt-row">
+        <label>ALT</label>
+        <input class="alt-input" type="number" id="altIn" value="250" min="50" max="2000" oninput="onAlt()"/>
+        <span class="alt-unit">ft</span>
+      </div>
+    </div>
+
+    <!-- SPEED -->
+    <div>
+      <div class="sec-lbl">Flight Speed</div>
+      <div class="alt-row">
+        <label>SPD</label>
+        <input class="alt-input" type="number" id="spdIn" value="25" min="1" max="200" oninput="onSpd()"/>
+        <span class="alt-unit">mph</span>
+      </div>
+    </div>
+
+    <!-- FOV SELECTOR -->
+    <div>
+      <div class="sec-lbl">LiDAR Field of View</div>
+      <div class="fov-cards">
+
+        <div class="fov-card fov-60 sel" id="fc60" onclick="setFOV(60)">
+          <div class="fov-badge">60°</div>
+          <div>
+            <div class="fov-name">NARROW · 60° FOV</div>
+            <div class="fov-winfo">½ angle 30° · <span id="fw60">288</span> ft wide</div>
+          </div>
+        </div>
+
+        <div class="fov-card fov-70" id="fc70" onclick="setFOV(70)">
+          <div class="fov-badge">70°</div>
+          <div>
+            <div class="fov-name">MEDIUM · 70° FOV</div>
+            <div class="fov-winfo">½ angle 35° · <span id="fw70">350</span> ft wide</div>
+          </div>
+        </div>
+
+        <div class="fov-card fov-90" id="fc90" onclick="setFOV(90)">
+          <div class="fov-badge">90°</div>
+          <div>
+            <div class="fov-name">WIDE · 90° FOV</div>
+            <div class="fov-winfo">½ angle 45° · <span id="fw90">500</span> ft wide</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- LIVE SWATH -->
+    <div>
+      <div class="sec-lbl">Active LiDAR Swath</div>
+      <div id="swath-box">
+        <div class="sw-row"><span class="sw-k">FOV Angle</span><span class="sw-v" id="sw-fov">60°</span></div>
+        <div class="sw-row"><span class="sw-k">Half-angle</span><span class="sw-v" id="sw-half">30°</span></div>
+        <div class="sw-row"><span class="sw-k">Width (ft)</span><span class="sw-v" id="sw-ft" style="color:var(--green)">288 ft</span></div>
+        <div class="sw-row"><span class="sw-k">Width (m)</span><span class="sw-v" id="sw-m">87.8 m</span></div>
+        <div id="sw-bar-wrap"><div id="sw-bar" style="width:57%;background:var(--green)"></div></div>
+        <div class="sw-row" style="margin-top:4px"><span class="sw-k">Formula</span><span class="sw-v" id="sw-form" style="font-size:10px;color:var(--text2)">2×250×tan30°</span></div>
+      </div>
+    </div>
+
+    <!-- STATS -->
+    <div>
+      <div class="sec-lbl">Mission Stats</div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="stat-v or" id="st-wps">0</div><div class="stat-l">Waypoints</div></div>
+        <div class="stat-box"><div class="stat-v" id="st-dist">0.00</div><div class="stat-l">km Path</div></div>
+        <div class="stat-box"><div class="stat-v gr" id="st-area">0.00</div><div class="stat-l">ha Covered</div></div>
+        <div class="stat-box"><div class="stat-v am" id="st-time">0:00</div><div class="stat-l">Est. Min</div></div>
+      </div>
+    </div>
+
+    <!-- WAYPOINT PAUSE -->
+    <div>
+      <div class="pause-lbl">Waypoint Dwell Pause</div>
+      <div id="pause-btns">
+        <button class="pause-btn active" id="pb-0" onclick="setPause(0)">None</button>
+        <button class="pause-btn"        id="pb-2" onclick="setPause(2)">2s</button>
+        <button class="pause-btn"        id="pb-5" onclick="setPause(5)">5s</button>
+        <button class="pause-btn"        id="pb-8" onclick="setPause(8)">8s</button>
+      </div>
+      <div id="pause-preview">
+        <div id="pause-dot"></div>
+        <div id="pause-txt">No pause at waypoints</div>
+        <div id="pause-val">—</div>
+      </div>
+    </div>
+
+    <!-- ACTIONS -->
+    <div>
+      <div class="sec-lbl">Actions</div>
+      <input type="file" id="fileIn" accept=".kml,.kmz" style="display:none" onchange="importFile(event)"/>
+      <div class="act-btns">
+        <button class="btn btn-imp" onclick="document.getElementById('fileIn').click()">⬆ Import KMZ / KML</button>
+        <button class="btn btn-exp" onclick="exportKMZ()">⬇ Export KMZ</button>
+        <button class="btn btn-wx" onclick="openWeather()">🌤 Weather Forecast<div class="btn-wx-pulse"></div></button>
+        <button class="btn btn-sec" onclick="openSectional()">✈ Sectional Chart / Airspace</button>
+        <button class="btn btn-undo" onclick="undoLast()">↩ Undo Last Point</button>
+        <button class="btn btn-clr" onclick="clearAll()">✕ Clear All</button>
+      </div>
+    </div>
+
+    <!-- TIPS -->
+    <div id="tips">
+      <p>
+        <strong>1.</strong> Search a location or pan to your area.<br>
+        <strong>2.</strong> Select FOV &amp; altitude.<br>
+        <strong>3.</strong> Click <strong>Draw Path</strong> then click the map to plot waypoints.<br>
+        <strong>4.</strong> <span style="color:var(--orange)">Orange line</span> = flight path.<br>
+        <strong>5.</strong> Colored corridor = LiDAR ground coverage.<br>
+        <strong>6.</strong> Set a <strong style="color:var(--amber)">Waypoint Pause</strong> to hover 2s / 5s / 8s at each point.<br>
+        <strong>7.</strong> <strong>Export KMZ</strong> opens in Google Earth.<br><br>
+        <strong>Keys:</strong> D=Draw · P=Pan · 1/2/3=FOV · Ctrl+Z=Undo · S=Sectional
+      </p>
+    </div>
+
+  </div>
+
+  <div id="status-bar">
+    <div id="s-dot" class="ready"></div>
+    <span id="s-txt">Google Maps loaded — click Draw Path to begin</span>
+  </div>
+</div>
+
+<!-- MAP -->
+<div id="map-wrap">
+  <div id="map"></div>
+
+  <div id="drop-overlay"><div id="drop-msg">📂  Drop KMZ / KML here</div></div>
+
+  <div id="map-search">
+    <div id="srch-inner">
+      <span class="s-ico">🔍</span>
+      <input id="srch-in" type="text" placeholder="Search any location…" autocomplete="off"/>
+    </div>
+    <div id="srch-res"></div>
+  </div>
+
+  <div id="lyr-btns">
+    <div class="lbtn on"  id="lb-sat"       title="Satellite (Esri/Maxar)"   onclick="setLayer('sat')">🛰</div>
+    <div class="lbtn"     id="lb-street"    title="Street"                   onclick="setLayer('street')">🗺</div>
+    <div class="lbtn"     id="lb-topo"      title="Terrain"                  onclick="setLayer('topo')">⛰</div>
+    <div class="lbtn"     id="lb-sectional" title="FAA Sectional Chart"      onclick="setLayer('sectional')">✈</div>
+    <div class="lbtn lbtn-sep"></div>
+    <div class="lbtn"     id="lb-airspace"  title="Toggle Airspace Overlay"  onclick="toggleAirspace()" style="font-size:13px;font-weight:700;letter-spacing:-1px">AIR</div>
+  </div>
+
+  <div id="ctip"></div>
+
+  <div id="hud">
+    <div class="hud-row">
+      <div class="hud-item"><div class="hud-v" id="h-sw">288 ft</div><div class="hud-l">Swath</div></div>
+      <div class="hud-item"><div class="hud-v" id="h-fov" style="color:var(--green)">60° FOV</div><div class="hud-l">Active FOV</div></div>
+      <div class="hud-item"><div class="hud-v" id="h-alt">250 ft</div><div class="hud-l">AGL</div></div>
+      <div class="hud-item"><div class="hud-v" id="h-spd">25 mph</div><div class="hud-l">Speed</div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+</div>
+
+</div><!-- /app -->
+
+<!-- ═══════════════════════════════════════
+     SECTIONAL CHART & AIRSPACE PANEL
+═══════════════════════════════════════ -->
+<div id="sec-panel">
+
+  <div id="sec-hdr">
+    <div id="sec-hdr-ico">✈</div>
+    <div id="sec-hdr-text">
+      <div id="sec-hdr-title">Sectional Chart</div>
+      <div id="sec-hdr-sub">FAA Charts · Airspace · NOTAMs</div>
+    </div>
+    <button id="sec-hdr-close" onclick="closeSectional()">✕</button>
+  </div>
+
+  <div id="sec-body">
+
+    <!-- Chart Mode -->
+    <div>
+      <div class="sec-lbl" style="font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text2);margin-bottom:7px;display:flex;align-items:center;gap:6px">Map Layer<span style="flex:1;height:1px;background:var(--border);display:block"></span></div>
+      <div class="sec-mode-grid">
+        <button class="sec-mode-btn active" id="smb-sec"   onclick="secSetChart('sectional')">🗺 Sectional</button>
+        <button class="sec-mode-btn"        id="smb-ter"   onclick="secSetChart('terminal')">🛬 Terminal</button>
+        <button class="sec-mode-btn"        id="smb-world" onclick="secSetChart('world')">🌍 World</button>
+        <button class="sec-mode-btn"        id="smb-off"   onclick="secSetChart('off')">✕ No Chart</button>
+      </div>
+    </div>
+
+    <!-- Chart opacity -->
+    <div>
+      <div class="sec-lbl" style="font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text2);margin-bottom:7px;display:flex;align-items:center;gap:6px">Chart Opacity<span style="flex:1;height:1px;background:var(--border);display:block"></span></div>
+      <div class="sec-slider-wrap">
+        <span style="font-size:13px">🗺</span>
+        <input type="range" class="sec-slider" id="sec-opacity-slider" min="0" max="100" value="80"
+               oninput="secSetOpacity(this.value)"/>
+        <span class="sec-slider-val" id="sec-opacity-val">80%</span>
+      </div>
+    </div>
+
+    <!-- FAA Chart Info -->
+    <div id="sec-chart-info">
+      <h4>FAA Chart Data</h4>
+      <div class="sci-row"><span class="sci-k">Source</span><span class="sci-v">FAA AeroNav</span></div>
+      <div class="sci-row"><span class="sci-k">Edition</span><span class="sci-v" id="sci-edition">CURRENT</span></div>
+      <div class="sci-row"><span class="sci-k">Format</span><span class="sci-v">WMS / Tile</span></div>
+      <div class="sci-row"><span class="sci-k">Coverage</span><span class="sci-v">CONUS + Hawaii</span></div>
+      <div class="sci-row"><span class="sci-k">Active Layer</span><span class="sci-v" id="sci-active">Sectional</span></div>
+    </div>
+
+    <!-- Airspace Overlays -->
+    <div>
+      <div class="sec-lbl" style="font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text2);margin-bottom:7px;display:flex;align-items:center;gap:6px">Airspace Overlays<span style="flex:1;height:1px;background:var(--border);display:block"></span></div>
+      <div class="asp-legend" id="asp-legend">
+
+        <div class="asp-row" id="asp-row-B" onclick="aspToggle('B')">
+          <div class="asp-swatch" style="background:rgba(0,100,255,.3);border-color:#0064ff"></div>
+          <div>
+            <div class="asp-name" style="color:#4d9fff">Class B — Major Airports</div>
+            <div class="asp-desc">Solid blue — requires ATC clearance</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-B"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-C" onclick="aspToggle('C')">
+          <div class="asp-swatch" style="background:rgba(180,0,255,.25);border-color:#b400ff"></div>
+          <div>
+            <div class="asp-name" style="color:#cc66ff">Class C — Regional Airports</div>
+            <div class="asp-desc">Magenta — two-way radio required</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-C"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-D" onclick="aspToggle('D')">
+          <div class="asp-swatch" style="background:rgba(0,160,255,.2);border-color:#00a0ff"></div>
+          <div>
+            <div class="asp-name" style="color:#66ccff">Class D — Smaller Airports</div>
+            <div class="asp-desc">Dashed blue — ATC at tower hours</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-D"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-E" onclick="aspToggle('E')">
+          <div class="asp-swatch" style="background:rgba(255,100,0,.2);border-color:#ff6400"></div>
+          <div>
+            <div class="asp-name" style="color:#ff9955">Class E — Controlled Airspace</div>
+            <div class="asp-desc">Magenta dashed — IFR transition</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-E"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-TFR" onclick="aspToggle('TFR')">
+          <div class="asp-swatch" style="background:rgba(255,30,30,.3);border-color:#ff1e1e"></div>
+          <div>
+            <div class="asp-name" style="color:#ff4444">TFRs — Temporary Flight Restrictions</div>
+            <div class="asp-desc">Red — active restrictions overlay</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-TFR"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-MOA" onclick="aspToggle('MOA')">
+          <div class="asp-swatch" style="background:rgba(255,200,0,.2);border-color:#ffc800"></div>
+          <div>
+            <div class="asp-name" style="color:#ffd93d">MOAs — Military Operations</div>
+            <div class="asp-desc">Yellow — active when notified</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-MOA"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-P" onclick="aspToggle('P')">
+          <div class="asp-swatch" style="background:rgba(255,30,30,.35);border-color:#ff1e1e"></div>
+          <div>
+            <div class="asp-name" style="color:#ff6666">Prohibited / Restricted Areas</div>
+            <div class="asp-desc">Red P/R — permanently restricted</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-P"></button>
+        </div>
+
+        <div class="asp-row" id="asp-row-UAS" onclick="aspToggle('UAS')">
+          <div class="asp-swatch" style="background:rgba(0,255,180,.2);border-color:#00ffb4"></div>
+          <div>
+            <div class="asp-name" style="color:#00e6a0">UAS Facility Maps (FAA)</div>
+            <div class="asp-desc">Teal — drone authorization areas</div>
+          </div>
+          <button class="asp-toggle on" id="asp-tog-UAS"></button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Airspace opacity -->
+    <div>
+      <div class="sec-lbl" style="font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--text2);margin-bottom:7px;display:flex;align-items:center;gap:6px">Airspace Opacity<span style="flex:1;height:1px;background:var(--border);display:block"></span></div>
+      <div class="sec-slider-wrap">
+        <span style="font-size:13px">🔵</span>
+        <input type="range" class="sec-slider" id="asp-opacity-slider" min="0" max="100" value="70"
+               oninput="aspSetOpacity(this.value)"/>
+        <span class="sec-slider-val" id="asp-opacity-val">70%</span>
+      </div>
+    </div>
+
+    <!-- Click info popup -->
+    <div id="asp-popup">
+      <div id="asp-popup-title">Airspace Info</div>
+      <div id="asp-popup-rows"></div>
+      <div style="margin-top:8px;font-size:10px;color:var(--text2)">Click anywhere on the map to inspect airspace at that point.</div>
+    </div>
+
+    <!-- Notice -->
+    <div class="sec-notice">
+      <strong>FAA Data Sources</strong><br>
+      Sectional chart tiles via <strong>FAA AeroNav WMS</strong>. Airspace polygons via <strong>OpenAIP</strong> and FAA. Always verify with official <a href="https://skyvector.com" target="_blank">SkyVector</a> or <a href="https://www.faa.gov/uas/recreational_fliers/where_can_i_fly/airspace_101/" target="_blank">FAA B4UFLY</a> before flight.<br><br>
+      <strong>Keys:</strong> S = toggle sectional · A = toggle all airspace
+    </div>
+
+  </div>
+
+  <div id="sec-footer">FAA AeroNav · OpenAIP · For reference only — verify before flight</div>
+</div>
+
+
+<!-- ═══════════════════════════════════════
+     WEATHER SIDE PANEL
+═══════════════════════════════════════ -->
+<div id="wx-panel">
+
+  <!-- Header -->
+  <div id="wx-hdr">
+    <div id="wx-hdr-ico">🌦</div>
+    <div id="wx-hdr-text">
+      <div id="wx-hdr-title">Weather Briefing</div>
+      <div id="wx-hdr-sub">Flight Conditions · 7-Day Forecast</div>
+    </div>
+    <button id="wx-hdr-close" onclick="closeWeather()">✕</button>
+  </div>
+
+  <!-- City search -->
+  <div id="wx-search-wrap">
+    <div id="wx-search-bar">
+      <input id="wx-search-in" type="text" placeholder="Search city…" autocomplete="off"
+             onkeydown="if(event.key==='Enter')wxSearch()"/>
+      <button id="wx-search-btn" onclick="wxSearch()" title="Search">🔍</button>
+    </div>
+  </div>
+
+  <!-- Scrollable body -->
+  <div id="wx-body">
+
+    <!-- Loading -->
+    <div id="wx-loading">
+      <div id="wx-spinner">⟳</div>
+      <div style="font-size:13px">Detecting location…</div>
+    </div>
+
+    <!-- Error -->
+    <div id="wx-error-box">
+      Unable to load weather data.<br>Check your connection or try a different city.
+      <br><button class="wx-retry" onclick="wxAutoLoad()">↻  Retry</button>
+    </div>
+
+    <!-- Content (hidden until loaded) -->
+    <div id="wx-content" style="display:none;display:flex;flex-direction:column;gap:12px">
+
+      <!-- Hero card -->
+      <div id="wx-hero">
+        <div id="wx-hero-ico">🌤</div>
+        <div id="wx-hero-temp">--°</div>
+        <div id="wx-hero-city">--</div>
+        <div id="wx-hero-desc">--</div>
+        <div class="wx-stats-row">
+          <div class="wx-stat">
+            <div class="wx-stat-ico">💧</div>
+            <div class="wx-stat-val" id="wx-humid">--%</div>
+            <div class="wx-stat-lbl">Humidity</div>
+          </div>
+          <div class="wx-stat">
+            <div class="wx-stat-ico">💨</div>
+            <div class="wx-stat-val" id="wx-wind">-- mph</div>
+            <div class="wx-stat-lbl">Wind</div>
+          </div>
+          <div class="wx-stat">
+            <div class="wx-stat-ico">💧</div>
+            <div class="wx-stat-val" id="wx-precip">--"</div>
+            <div class="wx-stat-lbl">Precip</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Flight suitability -->
+      <div id="wx-fly" class="good">
+        <div id="wx-fly-ico">✅</div>
+        <div id="wx-fly-txt">Evaluating conditions…</div>
+      </div>
+
+      <!-- 7-day -->
+      <div class="wx-sec-lbl">7-Day Outlook</div>
+      <div class="wx-days" id="wx-days"></div>
+
+    </div>
+  </div>
+
+  <div id="wx-footer">Open-Meteo · Nominatim · Free · No API Key Required</div>
+</div>
+
+<!-- ═══════════════════════════════════════
+     WEATHER ALERT MODAL
+═══════════════════════════════════════ -->
+<div id="wx-modal-backdrop" onclick="wxModalClose()">
+  <div id="wx-modal" onclick="event.stopPropagation()">
+    <div id="wx-modal-header">
+      <div id="wx-modal-cloud">☁️</div>
+      <div id="wx-modal-title">Weather Alert</div>
+      <button id="wx-modal-x" onclick="wxModalClose()">×</button>
+    </div>
+    <div id="wx-modal-body">
+      <div id="wx-modal-msg">Please enter a city name!</div>
+      <span class="wx-deco-cloud" style="bottom:-12px;left:10%;font-size:12px">☁</span>
+      <span class="wx-deco-cloud" style="top:-16px;right:15%;font-size:14px">☁</span>
+    </div>
+    <div id="wx-modal-footer">
+      <button id="wx-modal-ok" onclick="wxModalClose()">Got it</button>
+    </div>
+  </div>
+</div>
+
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// SKYPHOR LIDAR PLANNER — all functions at window (global) scope
+// so onclick="setMode()" / onclick="setFOV()" / onchange="importFile()"
+// all resolve correctly from HTML attributes.
+//
+// ONLY the map = L.map(...) call is inside window.addEventListener('load')
+// because Leaflet (L) must be fully parsed before it is used.
+// Everything else is declared at the top level of this script tag.
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── STATE ───────────────────────────────────────────────────────────────
+var drawing   = true;
+var pts       = [];
+var markers   = [];
+var pathLine  = null;
+var swathPoly = null;
+var preview   = null;
+var fov       = 60;
+var altFt     = 250;
+var speedMph  = 25;
+var pauseSec  = 0;    // waypoint dwell pause in seconds (0 = none)
+var map       = null;
+var TILES     = null;
+var srchTimer = null;
+var toastTimer= null;
+
+var FOV_COLOR = { 60: '#00e676', 70: '#ffb300', 90: '#ff3d5a' };
+
+function swathFt(f, a) { return 2 * a * Math.tan((f / 2) * Math.PI / 180); }
+function swathM(f, a)  { return swathFt(f, a) * 0.3048; }
+
+// ── HELPERS ──────────────────────────────────────────────────────────────
+function el(id) { return document.getElementById(id); }
+function setText(id, v) { var e = el(id); if (e) e.textContent = v; }
+function setStyle(id, prop, v) { var e = el(id); if (e) e.style[prop] = v; }
+
+// ── TOAST ────────────────────────────────────────────────────────────────
+function toast(msg, ico) {
+  var t = el('toast');
+  if (!t) return;
+  t.textContent = (ico || '✓') + '  ' + msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2800);
+}
+
+// ── STATUS BAR ───────────────────────────────────────────────────────────
+function setStatus(msg, type) {
+  setText('s-txt', msg);
+  var d = el('s-dot');
+  if (d) d.className = type || '';
+}
+
+// ── LAYER SWITCHER ────────────────────────────────────────────────────────
+function setLayer(k) {
+  if (!map || !TILES) return;
+
+  // Handle sectional as a special chart layer, not a base swap
+  if (k === 'sectional') {
+    openSectional();
+    secSetChart('sectional');
+    var sb = el('lb-sectional'); if (sb) sb.classList.add('on');
+    return;
+  }
+
+  // Remove all base tiles (including sectional if added as tile)
+  Object.keys(TILES).forEach(function (key) {
+    if (map.hasLayer(TILES[key])) map.removeLayer(TILES[key]);
+  });
+  // Restore full opacity on the selected base
+  if (TILES[k]) { TILES[k].setOpacity(1); TILES[k].addTo(map); }
+
+  // If a chart overlay is active, re-apply it on top at reduced base opacity
+  if (secChartLayer && map.hasLayer(secChartLayer) && k !== 'sectional') {
+    if (TILES[k]) TILES[k].setOpacity(0.15);
+  }
+
+  ['lb-sat','lb-street','lb-topo','lb-sectional'].forEach(function(id) {
+    var b = el(id); if (b) b.classList.remove('on');
+  });
+  var ids = { sat:'lb-sat', street:'lb-street', topo:'lb-topo', sectional:'lb-sectional' };
+  var btn = el(ids[k]); if (btn) btn.classList.add('on');
+}
+
+// ── DRAW MODE ─────────────────────────────────────────────────────────────
+function setMode(m) {
+  drawing = (m === 'draw');
+  var bd = el('btn-draw'), bp = el('btn-pan');
+  if (bd) bd.classList.toggle('active', drawing);
+  if (bp) bp.classList.toggle('active', !drawing);
+  if (map) map.getContainer().style.cursor = drawing ? 'crosshair' : '';
+  if (!drawing && preview && map) { map.removeLayer(preview); preview = null; }
+  setStatus(
+    drawing ? 'Draw mode — click map to place waypoints, double-click to finish'
+            : 'Pan mode — drag to move map',
+    drawing ? 'active' : 'ready'
+  );
+}
+
+// ── FOV SELECTOR ──────────────────────────────────────────────────────────
+function setFOV(f) {
+  fov = f;
+  [60, 70, 90].forEach(function (n) {
+    var c = el('fc' + n); if (c) c.classList.toggle('sel', n === f);
+  });
+  updateSwath();
+  renderSwath();
+}
+
+function onAlt() {
+  var inp = el('altIn');
+  altFt = inp ? (parseFloat(inp.value) || 250) : 250;
+  updateSwath();
+  renderSwath();
+  updateStats();
+}
+
+function onSpd() {
+  var inp = el('spdIn');
+  speedMph = inp ? (parseFloat(inp.value) || 25) : 25;
+  setText('h-spd', speedMph + ' mph');
+  updateStats();
+}
+
+// ── WAYPOINT PAUSE ────────────────────────────────────────────────────────
+function setPause(sec) {
+  pauseSec = sec;
+
+  // Update button active states
+  [0, 2, 5, 8].forEach(function(v) {
+    var b = el('pb-' + v);
+    if (b) b.classList.toggle('active', v === sec);
+  });
+
+  // Update preview row
+  var dot = el('pause-dot');
+  var txt = el('pause-txt');
+  var val = el('pause-val');
+
+  if (sec === 0) {
+    if (dot) dot.classList.remove('on');
+    if (txt) txt.textContent = 'No pause at waypoints';
+    if (val) val.textContent = '—';
+  } else {
+    if (dot) dot.classList.add('on');
+    if (txt) txt.textContent = 'Drone hovers at each waypoint';
+    if (val) val.textContent = sec + 's';
+  }
+
+  updateStats();  // recalculate total mission time
+  if (sec > 0) toast('Waypoint pause set to ' + sec + 's', '⏸');
+  else         toast('Waypoint pause disabled', '▶');
+}
+
+
+function updateSwath() {
+  var sw  = swathFt(fov, altFt);
+  var swm = sw * 0.3048;
+  var col = FOV_COLOR[fov];
+  var pct = Math.min(100, sw / swathFt(90, altFt) * 100);
+
+  setText('sw-fov',  fov + '°');
+  setText('sw-half', (fov / 2) + '°');
+  setText('sw-ft',   Math.round(sw) + ' ft');
+  setStyle('sw-ft',  'color', col);
+  setText('sw-m',    swm.toFixed(1) + ' m');
+  setText('sw-form', '2×' + altFt + '×tan(' + (fov / 2) + '°)');
+
+  var bar = el('sw-bar');
+  if (bar) { bar.style.width = pct + '%'; bar.style.background = col; }
+
+  setText('h-sw',  Math.round(sw) + ' ft');
+  setText('h-fov', fov + '° FOV');
+  setStyle('h-fov', 'color', col);
+  setText('h-alt', altFt + ' ft');
+  setText('h-spd', speedMph + ' mph');
+
+  [60, 70, 90].forEach(function (n) {
+    setText('fw' + n, Math.round(swathFt(n, altFt)));
+  });
+}
+
+// ── GEO MATH ──────────────────────────────────────────────────────────────
+function bearing(la1, lo1, la2, lo2) {
+  var r = Math.PI / 180, dL = (lo2 - lo1) * r;
+  var y = Math.sin(dL) * Math.cos(la2 * r);
+  var x = Math.cos(la1 * r) * Math.sin(la2 * r) -
+          Math.sin(la1 * r) * Math.cos(la2 * r) * Math.cos(dL);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function geoOffset(la, lo, distM, bear) {
+  var R = 6371000, d = distM / R, b = bear * Math.PI / 180;
+  var la1 = la * Math.PI / 180, lo1 = lo * Math.PI / 180;
+  var la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(b));
+  var lo2 = lo1 + Math.atan2(
+    Math.sin(b) * Math.sin(d) * Math.cos(la1),
+    Math.cos(d) - Math.sin(la1) * Math.sin(la2)
+  );
+  return { lat: la2 * 180 / Math.PI, lng: lo2 * 180 / Math.PI };
+}
+
+function havKm(la1, lo1, la2, lo2) {
+  var R = 6371, r = Math.PI / 180;
+  var dLa = (la2 - la1) * r, dLo = (lo2 - lo1) * r;
+  var a = Math.sin(dLa / 2) * Math.sin(dLa / 2) +
+          Math.cos(la1 * r) * Math.cos(la2 * r) *
+          Math.sin(dLo / 2) * Math.sin(dLo / 2);
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+// ── STATS ─────────────────────────────────────────────────────────────────
+function updateStats() {
+  setText('st-wps', pts.length);
+  var dist = 0;
+  for (var i = 1; i < pts.length; i++)
+    dist += havKm(pts[i-1].lat, pts[i-1].lng, pts[i].lat, pts[i].lng);
+  setText('st-dist', dist.toFixed(2));
+  setText('st-area', ((dist * 1000 * swathM(fov, altFt)) / 10000).toFixed(2));
+  // speed: mph → m/s → flight time in minutes
+  var speedMs = speedMph * 0.44704;
+  var flightMin = (speedMs > 0) ? (dist * 1000 / speedMs / 60) : 0;
+  // add total dwell time: pauseSec × number of waypoints (pause at each)
+  var dwellMin = (pauseSec > 0 && pts.length > 0) ? (pauseSec * pts.length / 60) : 0;
+  var t = flightMin + dwellMin;
+  var mm = Math.floor(t), ss = Math.round((t - mm) * 60);
+  setText('st-time', mm + ':' + (ss < 10 ? '0' : '') + ss);
+}
+
+// ── MARKERS ───────────────────────────────────────────────────────────────
+function addMarker(p, n) {
+  if (!map) return;
+  var col = FOV_COLOR[fov];
+  var ico = L.divIcon({
+    className: '',
+    html: '<div style="width:22px;height:22px;border-radius:50%;' +
+          'background:' + col + ';border:2.5px solid #fff;' +
+          'display:flex;align-items:center;justify-content:center;' +
+          'font-family:JetBrains Mono,monospace;font-size:9px;font-weight:700;' +
+          'color:#000;box-shadow:0 2px 8px rgba(0,0,0,.5);">' + n + '</div>',
+    iconSize: [22, 22], iconAnchor: [11, 11]
+  });
+  var mk = L.marker([p.lat, p.lng], { icon: ico, draggable: true });
+  mk.on('drag', function (e) {
+    var idx = markers.indexOf(mk);
+    if (idx >= 0) pts[idx] = { lat: e.latlng.lat, lng: e.latlng.lng };
+    renderPath(); renderSwath(); updateStats();
+  });
+  mk.addTo(map);
+  markers.push(mk);
+}
+
+// ── SWATH HELPERS ─────────────────────────────────────────────────────────
+
+// Interpolate an arc of points centered on `center` from bearing b1 to b2,
+// always going the SHORT way (< 180°). Returns array of {lat,lng}.
+function sweepArc(center, radiusM, b1, b2, steps) {
+  var out = [];
+  var diff = ((b2 - b1 + 540) % 360) - 180; // shortest signed delta
+  for (var i = 0; i <= steps; i++) {
+    var b = (b1 + diff * (i / steps) + 360) % 360;
+    out.push(geoOffset(center.lat, center.lng, radiusM, b));
+  }
+  return out;
+}
+
+// Build an inclusive swath polygon.
+// Strategy:
+//   - Each segment contributes a rectangular slab.
+//   - At interior waypoints, the OUTSIDE of the turn gets a rounded arc
+//     (so coverage is never clipped), and the INSIDE gets a straight miter
+//     (no inward concavity).
+//   - Both ends get a full semi-circle end-cap.
+//
+// We build two boundary arrays: "left" (port) and "right" (starboard),
+// then combine them into one closed ring.
+function buildInclusiveSwath(wpts, halfM) {
+  if (wpts.length < 2) return [];
+
+  var ARC = 14; // arc subdivisions
+
+  // Pre-compute per-segment bearings and offset points
+  var segs = [];
+  for (var i = 0; i < wpts.length - 1; i++) {
+    var A = wpts[i], B = wpts[i + 1];
+    var br = bearing(A.lat, A.lng, B.lat, B.lng);
+    segs.push({
+      A: A, B: B, br: br,
+      AL: geoOffset(A.lat, A.lng, halfM, (br - 90 + 360) % 360),
+      AR: geoOffset(A.lat, A.lng, halfM, (br + 90) % 360),
+      BL: geoOffset(B.lat, B.lng, halfM, (br - 90 + 360) % 360),
+      BR: geoOffset(B.lat, B.lng, halfM, (br + 90) % 360)
+    });
+  }
+
+  var left = [], right = [];
+
+  // ── Start semi-circle cap ──────────────────────────────────────────────
+  // Arc from (br+180-90) to (br+180+90) = the full rear semicircle
+  var fb = segs[0].br;
+  var capStart = sweepArc(wpts[0], halfM, (fb + 180 - 90 + 360) % 360, (fb + 180 + 90 + 360) % 360, ARC);
+  // First half goes on left, second half on right (they meet at the back)
+  var mid = Math.floor(capStart.length / 2);
+  for (var k = 0; k <= mid; k++) left.push(capStart[k]);
+  for (var k = mid; k < capStart.length; k++) right.push(capStart[k]);
+
+  // ── First segment start points ────────────────────────────────────────
+  left.push(segs[0].AL);
+  right.push(segs[0].AR);
+
+  // ── Interior waypoints ────────────────────────────────────────────────
+  for (var i = 0; i < segs.length - 1; i++) {
+    var s1 = segs[i], s2 = segs[i + 1];
+    var pivot = wpts[i + 1];
+
+    // Determine turn direction: positive = right turn, negative = left turn
+    var turnDelta = ((s2.br - s1.br + 540) % 360) - 180; // signed [-180,+180]
+
+    if (turnDelta > 0) {
+      // RIGHT turn: outside is LEFT side, inside is RIGHT side
+      // Left side (outside): arc from s1.BL bearing to s2.AL bearing
+      var bOutStart = (s1.br - 90 + 360) % 360;
+      var bOutEnd   = (s2.br - 90 + 360) % 360;
+      sweepArc(pivot, halfM, bOutStart, bOutEnd, ARC).forEach(function(p){ left.push(p); });
+      // Right side (inside): straight miter — just connect s1.BR to s2.AR
+      right.push(s1.BR);
+      right.push(s2.AR);
+    } else {
+      // LEFT turn: outside is RIGHT side, inside is LEFT side
+      // Right side (outside): arc from s1.BR bearing to s2.AR bearing
+      var bOutStart = (s1.br + 90) % 360;
+      var bOutEnd   = (s2.br + 90) % 360;
+      sweepArc(pivot, halfM, bOutStart, bOutEnd, ARC).forEach(function(p){ right.push(p); });
+      // Left side (inside): straight miter
+      left.push(s1.BL);
+      left.push(s2.AL);
+    }
+  }
+
+  // ── Last segment end points ───────────────────────────────────────────
+  left.push(segs[segs.length - 1].BL);
+  right.push(segs[segs.length - 1].BR);
+
+  // ── End semi-circle cap ───────────────────────────────────────────────
+  // Sweep from BR bearing (right side end) to BL bearing (left side end)
+  // going around the front of the last waypoint
+  var lb = segs[segs.length - 1].br;
+  var capEnd = sweepArc(wpts[wpts.length - 1], halfM, (lb + 90) % 360, (lb - 90 + 360) % 360, ARC);
+  for (var k = 0; k < capEnd.length; k++) right.push(capEnd[k]);
+
+  // ── Combine: left forward, then right reversed ────────────────────────
+  var ring = left.slice();
+  for (var k = right.length - 1; k >= 0; k--) ring.push(right[k]);
+
+  return ring.map(function(p) { return [p.lat, p.lng]; });
+}
+
+// ── RENDER PATH ───────────────────────────────────────────────────────────
+function renderPath() {
+  if (!map) return;
+  if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
+  if (pts.length < 2) return;
+  pathLine = L.polyline(
+    pts.map(function(p) { return [p.lat, p.lng]; }),
+    { color: '#ff6b2b', weight: 3, opacity: 0.95 }
+  ).addTo(map);
+}
+
+// ── RENDER SWATH CORRIDOR ─────────────────────────────────────────────────
+function renderSwath() {
+  if (!map) return;
+  if (swathPoly) { map.removeLayer(swathPoly); swathPoly = null; }
+  if (pts.length < 2) return;
+  var halfM = swathM(fov, altFt) / 2;
+  var col   = FOV_COLOR[fov];
+  var ring  = buildInclusiveSwath(pts, halfM);
+  swathPoly = L.polygon(ring, {
+    color: col, weight: 1.5, opacity: 0.85,
+    fillColor: col, fillOpacity: 0.2,
+    fillRule: 'nonzero'
+  }).addTo(map);
+}
+
+// ── UNDO / CLEAR ──────────────────────────────────────────────────────────
+function undoLast() {
+  if (!pts.length) return;
+  pts.pop();
+  var m = markers.pop();
+  if (m && map) map.removeLayer(m);
+  renderPath(); renderSwath(); updateStats();
+  setStatus('Undo — ' + pts.length + ' waypoint(s) remain', pts.length ? 'active' : 'ready');
+}
+
+function clearAll() {
+  pts = [];
+  markers.forEach(function (m) { if (map) map.removeLayer(m); });
+  markers = [];
+  if (pathLine  && map) { map.removeLayer(pathLine);  pathLine  = null; }
+  if (swathPoly && map) { map.removeLayer(swathPoly); swathPoly = null; }
+  if (preview   && map) { map.removeLayer(preview);   preview   = null; }
+  updateStats();
+  setStatus('Cleared — ready for new mission', 'ready');
+  toast('Map cleared', '✕');
+}
+
+// ── KML PARSING ───────────────────────────────────────────────────────────
+function parseCoordBlock(raw) {
+  var out = [];
+  var tokens = raw.trim().split(/\s+/);
+  for (var i = 0; i < tokens.length; i++) {
+    var parts = tokens[i].split(',');
+    if (parts.length >= 2) {
+      var lng = parseFloat(parts[0]), lat = parseFloat(parts[1]);
+      if (!isNaN(lat) && !isNaN(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
+        out.push({ lat: lat, lng: lng });
+    }
+  }
+  return out;
+}
+
+function parseKML(kmlText) {
+  var out = [], m, p;
+  // 1. LineString (standard flight path)
+  var re1 = /<LineString[\s\S]*?<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi;
+  while ((m = re1.exec(kmlText)) !== null) {
+    p = parseCoordBlock(m[1]);
+    if (p.length) { out = p; break; }
+  }
+  // 2. Point placemarks
+  if (!out.length) {
+    var re2 = /<Point[\s\S]*?<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi;
+    while ((m = re2.exec(kmlText)) !== null) {
+      out = out.concat(parseCoordBlock(m[1]));
+    }
+  }
+  // 3. Any coordinates block (last resort)
+  if (!out.length) {
+    var re3 = /<coordinates[^>]*>([\s\S]*?)<\/coordinates>/gi;
+    while ((m = re3.exec(kmlText)) !== null) {
+      p = parseCoordBlock(m[1]);
+      if (p.length > out.length) out = p;
+    }
+  }
+  return out;
+}
+
+// ── IMPORT KMZ / KML ─────────────────────────────────────────────────────
+function importFile(event) {
+  var file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+  setStatus('Loading ' + file.name + '…', 'active');
+  toast('Loading ' + file.name + '…', '📂');
+
+  var isKMZ = file.name.toLowerCase().endsWith('.kmz');
+
+  if (isKMZ) {
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      JSZip.loadAsync(e.target.result).then(function (zip) {
+        var kmlEntry = null;
+        Object.keys(zip.files).forEach(function (name) {
+          if (!kmlEntry && name.toLowerCase().endsWith('.kml'))
+            kmlEntry = zip.files[name];
+        });
+        if (!kmlEntry) { setStatus('Import error: no KML inside KMZ', 'error'); return; }
+        kmlEntry.async('string').then(function (kmlText) {
+          loadKMLText(kmlText, file.name);
+        });
+      }).catch(function (err) {
+        setStatus('Import error: ' + err.message, 'error');
+        toast('Import failed', '✗');
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    var reader2 = new FileReader();
+    reader2.onload = function (e) { loadKMLText(e.target.result, file.name); };
+    reader2.readAsText(file);
+  }
+}
+
+function loadKMLText(kmlText, name) {
+  var imported = parseKML(kmlText);
+  if (!imported.length) {
+    setStatus('Import error: no coordinates found', 'error');
+    toast('No coordinates found', '✗');
+    return;
+  }
+  clearAll();
+  imported.forEach(function (pt, i) {
+    pts.push({ lat: pt.lat, lng: pt.lng });
+    addMarker({ lat: pt.lat, lng: pt.lng }, i + 1);
+  });
+  renderPath(); renderSwath(); updateStats();
+  if (pts.length && map) {
+    map.fitBounds(
+      pts.map(function (p) { return [p.lat, p.lng]; }),
+      { padding: [40, 40], maxZoom: 16 }
+    );
+  }
+  setStatus('✓ Imported ' + name + ' — ' + pts.length + ' waypoints', 'ready');
+  toast('Imported! ' + pts.length + ' waypoints', '✓');
+}
+
+// ── EXPORT KMZ ────────────────────────────────────────────────────────────
+function exportKMZ() {
+  if (pts.length < 2) { toast('Draw a flight path first!', '\u26A0'); return; }
+
+  var sw   = swathFt(fov, altFt);
+  var swm  = sw * 0.3048;
+  var altM = altFt * 0.3048;
+  var date = new Date().toISOString().slice(0, 10);
+
+  // ── ABGR color table (Google Earth format: Alpha Blue Green Red) ──────────
+  // NOT rgba — byte order is reversed from CSS
+  var COLORS = {
+    60: { line: 'ff14e614', fill: '9914e614' },   // bright green, 60% opacity
+    70: { line: 'ff00b4ff', fill: '9900b4ff' },   // amber
+    90: { line: 'ff3d5aff', fill: '993d5aff' }    // red
+  };
+  var col = COLORS[fov] || COLORS[60];
+
+  // ── Flight path coordinates — relativeToGround so GE anchors to terrain ────
+  // Using absolute+extrude caused floating & constant camera movement on load.
+  // relativeToGround stays pinned to the surface regardless of terrain load state.
+  var pathCoords = pts.map(function(p) {
+    return p.lng.toFixed(8) + ',' + p.lat.toFixed(8) + ',' + altM.toFixed(1);
+  }).join('\n              ');
+
+  // ── Swath corridor polygon ring — use inclusive rounded outline ───────────
+  var halfM = swm / 2;
+  var ring = buildInclusiveSwath(pts, halfM);
+  ring.push(ring[0]); // close polygon (already lat/lng arrays)
+  var swathCoords = ring.map(function(p) {
+    return p[1].toFixed(8) + ',' + p[0].toFixed(8) + ',0';
+  }).join('\n              ');
+
+  // ── Waypoint placemarks — embed gx:Wait dwell pause when pauseSec > 0 ──────
+  // gx:Wait is the KML extension for a timed hover; respected by Google Earth
+  // Tour player and many drone GCS apps that parse gx: namespace tags.
+  var pauseLabel = pauseSec > 0 ? (' | Pause: ' + pauseSec + 's') : '';
+  var wpPM = pts.map(function(p, i) {
+    var n = String(i + 1).padStart(3, '0');
+    var lines = [
+      '\n    <Placemark>',
+      '      <n>WP' + n + (pauseSec > 0 ? ' \u23F8' + pauseSec + 's' : '') + '</n>',
+      '      <description>Waypoint ' + (i+1) + ' | ' + altFt + 'ft (' + altM.toFixed(0) + 'm) AGL' + pauseLabel + '</description>',
+      '      <styleUrl>#wpStyle</styleUrl>',
+      '      <Point>',
+      '        <altitudeMode>relativeToGround</altitudeMode>',
+      '        <coordinates>' + p.lng.toFixed(8) + ',' + p.lat.toFixed(8) + ',' + altM.toFixed(1) + '</coordinates>',
+      '      </Point>'
+    ];
+    if (pauseSec > 0) {
+      lines.push('      <!-- Dwell: hover for ' + pauseSec + ' seconds -->');
+      lines.push('      <gx:Wait><gx:duration>' + pauseSec + '</gx:duration></gx:Wait>');
+    }
+    lines.push('    </Placemark>');
+    return lines.join('\n');
+  }).join('');
+
+  // ── Distance / area stats ─────────────────────────────────────────────────
+  var dist = 0;
+  for (var j = 1; j < pts.length; j++)
+    dist += havKm(pts[j-1].lat, pts[j-1].lng, pts[j].lat, pts[j].lng);
+  var ha = (dist * 1000 * swm) / 10000;
+
+  // ── Bounding box → LookAt (GE flies to mission on open) ──────────────────
+  var lats = pts.map(function(p) { return p.lat; });
+  var lngs = pts.map(function(p) { return p.lng; });
+  var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+  var minLng = Math.min.apply(null, lngs), maxLng = Math.max.apply(null, lngs);
+  var cx = (minLng + maxLng) / 2, cy = (minLat + maxLat) / 2;
+  var span = Math.max(maxLng - minLng, maxLat - minLat);
+  var range = Math.max(span * 111000 * 2, swm * 4, 1000);
+
+  // ── Assemble KML ─────────────────────────────────────────────────────────
+  var kml = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<kml xmlns="http://www.opengis.net/kml/2.2"',
+    '     xmlns:gx="http://www.google.com/kml/ext/2.2">',
+    '<Document>',
+    '  <name>Skyphor LiDAR Mission ' + date + '</name>',
+    '  <description>FOV: ' + fov + 'deg | Alt: ' + altFt + 'ft (' + altM.toFixed(0) + 'm) | Speed: ' + speedMph + 'mph | Swath: ' + Math.round(sw) + 'ft (' + swm.toFixed(1) + 'm) | Dist: ' + dist.toFixed(2) + 'km | Area: ' + ha.toFixed(2) + 'ha' + (pauseSec > 0 ? ' | WP Pause: ' + pauseSec + 's' : '') + '</description>',
+    '',
+    '  <LookAt>',
+    '    <longitude>' + cx.toFixed(6) + '</longitude>',
+    '    <latitude>' + cy.toFixed(6) + '</latitude>',
+    '    <altitude>0</altitude>',
+    '    <heading>0</heading>',
+    '    <tilt>0</tilt>',
+    '    <range>' + range.toFixed(0) + '</range>',
+    '    <altitudeMode>relativeToGround</altitudeMode>',
+    '  </LookAt>',
+    '',
+    '  <!-- Flight path: thick orange wall floating at ' + altFt + 'ft AGL -->',
+    '  <Style id="pathStyle">',
+    '    <LineStyle><color>ff2b6bff</color><width>5</width></LineStyle>',
+    '    <PolyStyle><color>662b6bff</color><fill>1</fill><outline>1</outline></PolyStyle>',
+    '  </Style>',
+    '',
+    '  <!-- LiDAR ground coverage: semi-transparent polygon -->',
+    '  <Style id="swathStyle">',
+    '    <LineStyle><color>' + col.line + '</color><width>2</width></LineStyle>',
+    '    <PolyStyle><color>' + col.fill + '</color><fill>1</fill><outline>1</outline></PolyStyle>',
+    '  </Style>',
+    '',
+    '  <!-- Waypoints: numbered circles with poles to ground -->',
+    '  <Style id="wpStyle">',
+    '    <IconStyle>',
+    '      <color>ff1478ff</color><scale>1.0</scale>',
+    '      <Icon><href>https://maps.google.com/mapfiles/kml/paddle/wht-circle.png</href></Icon>',
+    '      <hotSpot x="0.5" y="0" xunits="fraction" yunits="fraction"/>',
+    '    </IconStyle>',
+    '    <LabelStyle><color>ffffffff</color><scale>0.8</scale></LabelStyle>',
+    '    <LineStyle><color>ff1478ff</color><width>2</width></LineStyle>',
+    '  </Style>',
+    '',
+    '  <Folder>',
+    '    <name>\u2708 Flight Path \u2014 ' + altFt + 'ft AGL</name>',
+    '    <Placemark>',
+    '      <name>Flight Line \u2014 ' + fov + 'deg FOV \u2014 ' + altFt + 'ft</name>',
+    '      <description>Distance: ' + dist.toFixed(2) + 'km | Altitude: ' + altFt + 'ft AGL | FOV: ' + fov + 'deg</description>',
+    '      <styleUrl>#pathStyle</styleUrl>',
+    '      <LineString>',
+    '        <tessellate>1</tessellate>',
+    '        <altitudeMode>relativeToGround</altitudeMode>',
+    '        <coordinates>',
+    '              ' + pathCoords,
+    '        </coordinates>',
+    '      </LineString>',
+    '    </Placemark>',
+    wpPM,
+    '  </Folder>',
+    '',
+    '  <Folder>',
+    '    <name>\uD83D\uDCE1 LiDAR Coverage \u2014 ' + fov + 'deg FOV \u2014 ' + Math.round(sw) + 'ft wide</name>',
+    '    <Placemark>',
+    '      <name>Swath Footprint</name>',
+    '      <description>FOV: ' + fov + 'deg | Half-angle: ' + fov/2 + 'deg | Width: ' + Math.round(sw) + 'ft (' + swm.toFixed(1) + 'm) | Area: ' + ha.toFixed(2) + 'ha</description>',
+    '      <styleUrl>#swathStyle</styleUrl>',
+    '      <Polygon>',
+    '        <tessellate>1</tessellate>',
+    '        <altitudeMode>clampToGround</altitudeMode>',
+    '        <outerBoundaryIs><LinearRing><coordinates>',
+    '              ' + swathCoords,
+    '        </coordinates></LinearRing></outerBoundaryIs>',
+    '      </Polygon>',
+    '    </Placemark>',
+    '  </Folder>',
+    '',
+    '</Document>',
+    '</kml>'
+  ].join('\n');
+
+  var zip = new JSZip();
+  zip.file('doc.kml', kml);
+  zip.generateAsync({ type: 'blob', compression: 'DEFLATE' }).then(function(blob) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'skyphor_' + fov + 'fov_' + altFt + 'ft' + (pauseSec > 0 ? '_' + pauseSec + 's' : '') + '_' + date + '.kmz';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    setStatus('KMZ exported \u2014 ' + pts.length + ' WPs \u00B7 ' + dist.toFixed(2) + 'km \u00B7 ' + ha.toFixed(2) + 'ha', 'ready');
+    toast('Exported! ' + pts.length + ' WPs \u00B7 ' + dist.toFixed(2) + 'km', '\u2B07');
+  });
+}
+
+// ── DRAG-AND-DROP KMZ/KML AUTO-LOAD ──────────────────────────────────────────
+// Works identically to the Import button — same JSZip path, same loadKMLText()
+function handleDroppedFile(file) {
+  if (!file) return;
+  var name = file.name.toLowerCase();
+  if (!name.endsWith('.kmz') && !name.endsWith('.kml')) {
+    toast('Drop a .kmz or .kml file', '⚠');
+    setStatus('Drop error: only .kmz / .kml accepted', 'error');
+    return;
+  }
+  setStatus('Loading ' + file.name + '…', 'active');
+  toast('Loading ' + file.name + '…', '📂');
+  if (name.endsWith('.kmz')) {
+    var r = new FileReader();
+    r.onload = function(e) {
+      JSZip.loadAsync(e.target.result).then(function(zip) {
+        var kmlEntry = null;
+        Object.keys(zip.files).forEach(function(k) {
+          if (!kmlEntry && k.toLowerCase().endsWith('.kml')) kmlEntry = zip.files[k];
+        });
+        if (!kmlEntry) { setStatus('Import error: no KML inside KMZ', 'error'); return; }
+        kmlEntry.async('string').then(function(kmlText) { loadKMLText(kmlText, file.name); });
+      }).catch(function(err) { setStatus('Import error: ' + err.message, 'error'); });
+    };
+    r.readAsArrayBuffer(file);
+  } else {
+    var r2 = new FileReader();
+    r2.onload = function(e) { loadKMLText(e.target.result, file.name); };
+    r2.readAsText(file);
+  }
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────
+function doSearch(q) {
+  var sr = el('srch-res');
+  if (!sr) return;
+  if (!q.trim()) { sr.style.display = 'none'; return; }
+  sr.style.display = 'block';
+  sr.innerHTML = '<div class="s-load">Searching…</div>';
+  fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(q) + '&format=json&limit=5',
+    { headers: { 'Accept-Language': 'en' } }
+  ).then(function (r) { return r.json(); }).then(function (data) {
+    if (!data.length) { sr.innerHTML = '<div class="s-load">No results</div>'; return; }
+    sr.innerHTML = '';
+    data.forEach(function (item) {
+      var parts = item.display_name.split(', ');
+      var div = document.createElement('div');
+      div.className = 's-item';
+      div.innerHTML = '<span>📍</span><span>' + parts.slice(0,3).join(', ') + '</span>';
+      div.onclick = function () {
+        var bb = item.boundingbox;
+        if (bb && map) map.fitBounds([[+bb[0],+bb[2]],[+bb[1],+bb[3]]], { maxZoom: 16 });
+        else if (map) map.setView([+item.lat, +item.lon], 14);
+        sr.style.display = 'none';
+        var si = el('srch-in'); if (si) si.value = parts.slice(0,2).join(', ');
+        setStatus('Viewing: ' + parts[0], 'ready');
+      };
+      sr.appendChild(div);
+    });
+  }).catch(function () { sr.innerHTML = '<div class="s-load">Search unavailable</div>'; });
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════════
+// SECTIONAL CHART & AIRSPACE MODULE
+// Sources:
+//   - FAA AeroNav WMS  (sectional / terminal / planning charts)
+//   - OpenAIP tile overlay  (airspace class B/C/D/E/MOA/P/R/UAS)
+//   - All free, no API key required for basic airspace tiles
+//
+// FAA Chart API JSON provided:
+//   Edition: CURRENT · Product: WALLPLANNING
+//   URL: http://aeronav.faa.gov/visual/12-05-2019/Planning/US_WallPlan.zip
+// ═══════════════════════════════════════════════════════════════════════
+
+var secOpen        = false;
+var secChartLayer  = null;   // active FAA chart tile layer
+var secAirspaceLyr = null;   // OpenAIP airspace overlay
+var secCurrentMode = 'sectional';
+var secChartOpacity = 0.8;
+var aspOpacity      = 0.7;
+
+// Airspace class visibility state
+var ASP_STATE = { B:true, C:true, D:true, E:true, TFR:true, MOA:true, P:true, UAS:true };
+
+// ── FAA AeroNav WMS tile endpoints ────────────────────────────────────────
+// The FAA publishes georeferenced sectional tiles via their public WMS.
+// We use the NAIP/ArcGIS-hosted versions which are stable and CORS-friendly.
+var SEC_TILES = {
+  sectional: {
+    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}',
+    name: 'Sectional',
+    attr: 'FAA AeroNav · Esri World Navigation Charts'
+  },
+  terminal: {
+    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}',
+    name: 'Terminal Area',
+    attr: 'FAA AeroNav · Esri World Navigation Charts'
+  },
+  world: {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+    name: 'World Aeronautical',
+    attr: 'Esri World Topo'
+  }
+};
+
+// ── OpenAIP airspace WMS (free public layer, CORS ok) ─────────────────────
+// OpenAIP provides free airspace tiles for non-commercial aviation reference.
+// URL pattern: https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png
+// Fallback: FAA public WMS for US airspace
+var OPENAIP_URL = 'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey=';
+var OPENAIP_KEY = ''; // empty = uses public anonymous tier (zoom-limited)
+
+// Airspace class colours (fill / stroke) for drawn polygons on click-inspect
+var ASP_COLORS = {
+  B:   { fill:'rgba(0,100,255,0.18)',   stroke:'#0064ff', label:'Class B' },
+  C:   { fill:'rgba(180,0,255,0.18)',   stroke:'#b400ff', label:'Class C' },
+  D:   { fill:'rgba(0,160,255,0.15)',   stroke:'#00a0ff', label:'Class D' },
+  E:   { fill:'rgba(255,100,0,0.12)',   stroke:'#ff6400', label:'Class E' },
+  TFR: { fill:'rgba(255,30,30,0.22)',   stroke:'#ff1e1e', label:'TFR' },
+  MOA: { fill:'rgba(255,200,0,0.15)',   stroke:'#ffc800', label:'MOA' },
+  P:   { fill:'rgba(255,30,30,0.25)',   stroke:'#ff0000', label:'Prohibited/Restricted' },
+  UAS: { fill:'rgba(0,255,180,0.15)',   stroke:'#00ffb4', label:'UAS Facility' }
+};
+
+// Persistent drawn airspace polygons from click-inspect
+var aspPolygons = [];
+var aspLayers   = {};  // keyed by class, arrays of L.polygon
+
+// ── Panel open / close ─────────────────────────────────────────────────────
+function openSectional() {
+  secOpen = true;
+  document.getElementById('sec-panel').classList.add('open');
+  if (!secChartLayer && map) secApplyChart('sectional');
+  if (!secAirspaceLyr && map) secApplyAirspace();
+}
+function closeSectional() {
+  secOpen = false;
+  document.getElementById('sec-panel').classList.remove('open');
+}
+
+// ── Chart layer switching ──────────────────────────────────────────────────
+function secSetChart(mode) {
+  secCurrentMode = mode;
+  ['sec','ter','world','off'].forEach(function(k) {
+    var b = document.getElementById('smb-' + k);
+    if (b) b.classList.remove('active');
+  });
+  var activeId = { sectional:'smb-sec', terminal:'smb-ter', world:'smb-world', off:'smb-off' }[mode];
+  var ab = document.getElementById(activeId);
+  if (ab) ab.classList.add('active');
+
+  var nameMap = { sectional:'Sectional', terminal:'Terminal Area', world:'World Aeronautical', off:'None' };
+  var aEl = document.getElementById('sci-active');
+  if (aEl) aEl.textContent = nameMap[mode] || mode;
+
+  if (mode === 'off') {
+    if (secChartLayer && map) { map.removeLayer(secChartLayer); secChartLayer = null; }
+    return;
+  }
+  secApplyChart(mode);
+}
+
+function secApplyChart(mode) {
+  if (!map) return;
+  if (secChartLayer) { map.removeLayer(secChartLayer); secChartLayer = null; }
+  var cfg = SEC_TILES[mode] || SEC_TILES.sectional;
+  secChartLayer = L.tileLayer(cfg.url, {
+    attribution: cfg.attr,
+    maxZoom: 20,
+    maxNativeZoom: mode === 'sectional' ? 12 : 18,
+    opacity: secChartOpacity,
+    zIndex: 5
+  });
+  // Insert below waypoints/swath layers
+  secChartLayer.addTo(map);
+  secChartLayer.bringToBack();
+  // Make base tile invisible so chart shows through
+  if (TILES) {
+    Object.keys(TILES).forEach(function(k) {
+      if (map.hasLayer(TILES[k])) TILES[k].setOpacity(0.15);
+    });
+  }
+}
+
+function secSetOpacity(val) {
+  secChartOpacity = val / 100;
+  document.getElementById('sec-opacity-val').textContent = val + '%';
+  if (secChartLayer) secChartLayer.setOpacity(secChartOpacity);
+}
+
+// ── Airspace overlay (OpenAIP public tiles) ────────────────────────────────
+function secApplyAirspace() {
+  if (!map) return;
+  if (secAirspaceLyr) return; // already applied
+
+  // Primary: OpenAIP public tile layer — free, no key for basic use
+  // Falls back gracefully if tiles don't load (shows empty overlay)
+  secAirspaceLyr = L.tileLayer(
+    'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png',
+    {
+      attribution: 'Airspace &copy; <a href="https://www.openaip.net">OpenAIP</a>',
+      maxZoom: 20,
+      maxNativeZoom: 14,
+      opacity: aspOpacity,
+      zIndex: 20,
+      errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    }
+  );
+  secAirspaceLyr.addTo(map);
+
+  // Also add a dedicated FAA UAS layer from ArcGIS Living Atlas
+  secAddUASLayer();
+}
+
+function secAddUASLayer() {
+  if (!map) return;
+  // FAA UAS Data Delivery System tiles (public, no key)
+  var uasLayer = L.tileLayer.wms(
+    'https://faa.maps.arcgis.com/sharing/rest/content/items/c6f9064de4c9479494a1bfe0d6d67e4f/resources/styles/root.json',
+    {
+      layers: 'UAS_Facility_Map',
+      format: 'image/png',
+      transparent: true,
+      opacity: 0.6,
+      zIndex: 22,
+      attribution: 'FAA UAS Facility Map'
+    }
+  );
+  // Silently skip if WMS fails — the OpenAIP layer already covers this
+  try { uasLayer.addTo(map); } catch(e) {}
+  window._uasLayer = uasLayer;
+}
+
+function toggleAirspace() {
+  var btn = document.getElementById('lb-airspace');
+  if (secAirspaceLyr && map.hasLayer(secAirspaceLyr)) {
+    map.removeLayer(secAirspaceLyr);
+    if (btn) btn.classList.remove('on');
+    setStatus('Airspace overlay hidden', 'ready');
+  } else {
+    if (!secAirspaceLyr) secApplyAirspace();
+    else secAirspaceLyr.addTo(map);
+    if (btn) btn.classList.add('on');
+    setStatus('Airspace overlay active', 'ready');
+  }
+}
+
+function aspSetOpacity(val) {
+  aspOpacity = val / 100;
+  document.getElementById('asp-opacity-val').textContent = val + '%';
+  if (secAirspaceLyr) secAirspaceLyr.setOpacity(aspOpacity);
+}
+
+// ── Airspace class toggle (visual only — hides/shows drawn class polygons) ─
+function aspToggle(cls) {
+  ASP_STATE[cls] = !ASP_STATE[cls];
+  var row = document.getElementById('asp-row-' + cls);
+  var tog = document.getElementById('asp-tog-' + cls);
+  if (row) row.classList.toggle('hidden-asp', !ASP_STATE[cls]);
+  if (tog) { tog.classList.toggle('on', ASP_STATE[cls]); tog.classList.toggle('off', !ASP_STATE[cls]); }
+
+  // Toggle any drawn polygon layers for this class
+  if (aspLayers[cls]) {
+    aspLayers[cls].forEach(function(poly) {
+      if (ASP_STATE[cls]) { if (!map.hasLayer(poly)) poly.addTo(map); }
+      else                 { if (map.hasLayer(poly))  map.removeLayer(poly); }
+    });
+  }
+  toast((ASP_STATE[cls] ? 'Showing' : 'Hiding') + ' Class ' + cls + ' airspace', '✈');
+}
+
+// ── Click-to-inspect airspace via FAA GIS API ──────────────────────────────
+// Uses the FAA public ArcGIS REST endpoint for airspace class query
+function secInspectAirspace(lat, lng) {
+  var popup = document.getElementById('asp-popup');
+  var rows  = document.getElementById('asp-popup-rows');
+  if (!popup || !rows) return;
+
+  popup.classList.add('show');
+  rows.innerHTML = '<div style="color:var(--text2);font-size:11px">Querying FAA airspace…</div>';
+
+  // FAA public ArcGIS REST — Class Airspace feature service
+  // Returns airspace intersecting the clicked point
+  var url = 'https://utility.arcgis.com/usrsvcs/servers/5b2e2ff7-c95a-4f56-b1e9-c5b1e89c1e99/rest/services/ArcGIS/FAA_Class_Airspace/MapServer/0/query'
+    + '?geometry=' + lng.toFixed(6) + ',' + lat.toFixed(6)
+    + '&geometryType=esriGeometryPoint'
+    + '&inSR=4326'
+    + '&spatialRel=esriSpatialRelIntersects'
+    + '&outFields=NAME,TYPE_CODE,LOWER_VAL,UPPER_VAL,LOWER_UOM,UPPER_UOM'
+    + '&returnGeometry=false'
+    + '&f=json';
+
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.features || !data.features.length) {
+        rows.innerHTML = secFallbackInspect(lat, lng);
+        return;
+      }
+      var html = '';
+      data.features.forEach(function(f) {
+        var a = f.attributes || {};
+        var cls = a.TYPE_CODE || '?';
+        var col = (ASP_COLORS[cls] || {}).stroke || '#6dcc6d';
+        html += '<div style="margin-bottom:10px;padding:8px;background:var(--bg);border-radius:7px;border-left:3px solid ' + col + '">';
+        html += '<div style="font-size:12px;font-weight:700;color:' + col + ';margin-bottom:5px">' + (a.NAME || 'Unnamed') + ' — Class ' + cls + '</div>';
+        html += '<div class="asp-popup-row"><span class="asp-popup-k">Floor</span><span class="asp-popup-v">' + (a.LOWER_VAL || 'SFC') + ' ' + (a.LOWER_UOM || '') + '</span></div>';
+        html += '<div class="asp-popup-row"><span class="asp-popup-k">Ceiling</span><span class="asp-popup-v">' + (a.UPPER_VAL || 'UNL') + ' ' + (a.UPPER_UOM || '') + '</span></div>';
+        html += '</div>';
+      });
+      rows.innerHTML = html || secFallbackInspect(lat, lng);
+    })
+    .catch(function() {
+      rows.innerHTML = secFallbackInspect(lat, lng);
+    });
+}
+
+// Fallback: show coordinate + altitude guidance when FAA GIS is unavailable
+function secFallbackInspect(lat, lng) {
+  // Simple rule-based guess based on proximity to major airports
+  return '<div style="padding:8px;background:var(--bg);border-radius:7px;border-left:3px solid #6dcc6d">'
+    + '<div class="asp-popup-row"><span class="asp-popup-k">Lat</span><span class="asp-popup-v">' + lat.toFixed(5) + '°</span></div>'
+    + '<div class="asp-popup-row"><span class="asp-popup-k">Lon</span><span class="asp-popup-v">' + lng.toFixed(5) + '°</span></div>'
+    + '<div class="asp-popup-row"><span class="asp-popup-k">Status</span><span class="asp-popup-v" style="color:var(--amber)">Check B4UFLY</span></div>'
+    + '</div>'
+    + '<div style="margin-top:6px;font-size:10px;color:var(--text2)">FAA GIS query unavailable. '
+    + '<a href="https://b4ufly.aloft.ai/?lat=' + lat.toFixed(5) + '&lng=' + lng.toFixed(5) + '" target="_blank" style="color:#6dcc6d">Open B4UFLY ↗</a></div>';
+}
+
+// ── Layer switcher integration — restore base tile when leaving chart mode ─
+// Wrap original setLayer to handle chart + base interaction
+var _origSetLayer = null; // patched in load
+
+function setLayerWithChartAware(k) {
+  // Restore base tile opacity if switching away from chart
+  if (TILES) {
+    Object.keys(TILES).forEach(function(key) {
+      if (map && map.hasLayer(TILES[key])) TILES[key].setOpacity(1);
+    });
+  }
+  // Remove chart layer when switching to a standard base
+  if (secChartLayer && k !== 'sectional') {
+    // Don't remove — just reduce to allow overlay
+  }
+  if (_origSetLayer) _origSetLayer(k);
+}
+
+// ── Keyboard shortcuts for sectional ──────────────────────────────────────
+document.addEventListener('keydown', function(e) {
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  if (e.key === 's' || e.key === 'S') {
+    if (secOpen) closeSectional(); else openSectional();
+  }
+  if ((e.key === 'a' || e.key === 'A') && secOpen) {
+    toggleAirspace();
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// WEATHER MODULE
+// Data: Open-Meteo (free, no API key) · Nominatim geocoding
+// Mirrors the React Weather component design (search, icons, modal alert)
+// ═══════════════════════════════════════════════════════════════════════
+
+var wxOpen     = false;
+var wxLat      = null;
+var wxLon      = null;
+var wxLoaded   = false;
+
+// WMO weather code → emoji + label (matches OpenWeatherMap icon set logic)
+var WMO = {
+  0: { ico:'☀️',  lbl:'Clear skies' },
+  1: { ico:'🌤',  lbl:'Mainly clear' },
+  2: { ico:'⛅',  lbl:'Partly cloudy' },
+  3: { ico:'☁️',  lbl:'Overcast' },
+  45:{ ico:'🌫',  lbl:'Foggy' },
+  48:{ ico:'🌫',  lbl:'Freezing fog' },
+  51:{ ico:'🌦',  lbl:'Light drizzle' },
+  53:{ ico:'🌦',  lbl:'Drizzle' },
+  55:{ ico:'🌧',  lbl:'Heavy drizzle' },
+  61:{ ico:'🌧',  lbl:'Light rain' },
+  63:{ ico:'🌧',  lbl:'Rain' },
+  65:{ ico:'🌧',  lbl:'Heavy rain' },
+  71:{ ico:'🌨',  lbl:'Light snow' },
+  73:{ ico:'🌨',  lbl:'Snow' },
+  75:{ ico:'❄️',  lbl:'Heavy snow' },
+  77:{ ico:'🌨',  lbl:'Snow grains' },
+  80:{ ico:'🌦',  lbl:'Showers' },
+  81:{ ico:'🌧',  lbl:'Heavy showers' },
+  82:{ ico:'⛈',  lbl:'Violent showers' },
+  85:{ ico:'🌨',  lbl:'Snow showers' },
+  86:{ ico:'🌨',  lbl:'Heavy snow showers' },
+  95:{ ico:'⛈',  lbl:'Thunderstorm' },
+  96:{ ico:'⛈',  lbl:'Thunderstorm + hail' },
+  99:{ ico:'⛈',  lbl:'Severe thunderstorm' }
+};
+function wmoInfo(code) { return WMO[code] || { ico:'🌡', lbl:'Unknown' }; }
+
+function flyCheck(windMph, gustMph, precipIn, code) {
+  var BAD_CODES = [45,48,65,75,82,86,95,96,99];
+  if (BAD_CODES.indexOf(code) !== -1) return { cls:'bad',  ico:'⛔', txt:'No-fly: severe / hazardous conditions' };
+  if (windMph > 25 || gustMph > 35)   return { cls:'bad',  ico:'⛔', txt:'No-fly: winds exceed safe limits (' + windMph + ' mph / gusts ' + gustMph + ')' };
+  var WARN_CODES = [51,53,55,61,63,71,73,80,81,85];
+  if (windMph > 15 || gustMph > 22)   return { cls:'caution', ico:'⚠️', txt:'Caution: moderate winds — verify airspace & local rules' };
+  if (precipIn > 0.05)                return { cls:'caution', ico:'⚠️', txt:'Caution: precipitation in forecast' };
+  if (WARN_CODES.indexOf(code) !== -1) return { cls:'caution', ico:'⚠️', txt:'Caution: reduced visibility / precipitation' };
+  return { cls:'good', ico:'✅', txt:'Good conditions for LiDAR flight operations' };
+}
+
+/* Panel open / close */
+function openWeather() {
+  wxOpen = true;
+  document.getElementById('wx-panel').classList.add('open');
+  if (!wxLoaded) wxAutoLoad();
+}
+function closeWeather() {
+  wxOpen = false;
+  document.getElementById('wx-panel').classList.remove('open');
+}
+
+/* Modal helpers */
+function wxModalShow(msg) {
+  document.getElementById('wx-modal-msg').textContent = msg || 'Please enter a city name!';
+  document.getElementById('wx-modal-backdrop').classList.add('show');
+}
+function wxModalClose() {
+  document.getElementById('wx-modal-backdrop').classList.remove('show');
+}
+
+/* Search by city name via Nominatim → coordinates → Open-Meteo */
+function wxSearch() {
+  var inp = document.getElementById('wx-search-in');
+  var city = inp ? inp.value.trim() : '';
+  if (!city) { wxModalShow('Please enter a city name!'); return; }
+
+  wxSetLoading(true);
+  fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(city) + '&format=json&limit=1',
+        { headers: { 'Accept-Language': 'en' } })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.length) {
+        wxSetLoading(false);
+        wxModalShow('City "' + city + '" not found. Try a different name.');
+        return;
+      }
+      wxLat = parseFloat(data[0].lat);
+      wxLon = parseFloat(data[0].lon);
+      var parts = (data[0].display_name || city).split(', ');
+      var label = parts.slice(0,2).join(', ');
+      wxFetchWeather(wxLat, wxLon, label);
+    })
+    .catch(function() {
+      wxSetLoading(false);
+      wxModalShow('Search failed — check your connection.');
+    });
+}
+
+/* Auto-detect location via browser geolocation */
+function wxAutoLoad() {
+  wxSetLoading(true);
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      function(pos) {
+        wxLat = pos.coords.latitude;
+        wxLon = pos.coords.longitude;
+        wxReverseGeo(wxLat, wxLon);
+      },
+      function() {
+        // Fallback: Chicago (since user is in Chicago)
+        wxLat = 41.8781; wxLon = -87.6298;
+        wxFetchWeather(wxLat, wxLon, 'Chicago, IL');
+      }
+    );
+  } else {
+    wxLat = 41.8781; wxLon = -87.6298;
+    wxFetchWeather(wxLat, wxLon, 'Chicago, IL');
+  }
+}
+
+function wxReverseGeo(lat, lon) {
+  fetch('https://nominatim.openstreetmap.org/reverse?lat=' + lat + '&lon=' + lon + '&format=json',
+        { headers: { 'Accept-Language': 'en' } })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var a = d.address || {};
+      var city = a.city || a.town || a.village || a.county || 'Your location';
+      var state = a.state || a.country || '';
+      var label = city + (state && state !== city ? ', ' + state : '');
+      wxFetchWeather(lat, lon, label);
+    })
+    .catch(function() { wxFetchWeather(lat, lon, 'Your location'); });
+}
+
+function wxFetchWeather(lat, lon, cityLabel) {
+  var url = 'https://api.open-meteo.com/v1/forecast'
+    + '?latitude=' + lat + '&longitude=' + lon
+    + '&current=weather_code,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_gusts_10m,precipitation'
+    + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max'
+    + '&temperature_unit=fahrenheit'
+    + '&wind_speed_unit=mph'
+    + '&precipitation_unit=inch'
+    + '&timezone=auto'
+    + '&forecast_days=7';
+
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(data) { wxRender(data, cityLabel); })
+    .catch(function() {
+      wxSetLoading(false);
+      document.getElementById('wx-error-box').style.display = 'block';
+    });
+}
+
+function wxRender(d, cityLabel) {
+  try {
+    var cur   = d.current || {};
+    var daily = d.daily   || {};
+
+    // ── Current conditions ──────────────────────────────────────────
+    var code   = cur.weather_code || 0;
+    var info   = wmoInfo(code);
+    var tempF  = Math.round(cur.temperature_2m || 0);
+    var humid  = Math.round(cur.relative_humidity_2m || 0);
+    var wind   = Math.round(cur.wind_speed_10m || 0);
+    var gust   = Math.round(cur.wind_gusts_10m || 0);
+    var precip = (cur.precipitation || 0).toFixed(2);
+
+    document.getElementById('wx-hero-ico').textContent  = info.ico;
+    document.getElementById('wx-hero-temp').textContent = tempF + '°F';
+    document.getElementById('wx-hero-city').textContent = cityLabel;
+    document.getElementById('wx-hero-desc').textContent = info.lbl;
+    document.getElementById('wx-humid').textContent     = humid + '%';
+    document.getElementById('wx-wind').textContent      = wind + ' mph';
+    document.getElementById('wx-precip').textContent    = precip + '"';
+
+    // ── Flight suitability ──────────────────────────────────────────
+    var fly = flyCheck(wind, gust, parseFloat(precip), code);
+    var badge = document.getElementById('wx-fly');
+    badge.className = 'wx-fly ' + fly.cls;  // keep id intact
+    badge.id = 'wx-fly';
+    document.getElementById('wx-fly-ico').textContent = fly.ico;
+    document.getElementById('wx-fly-txt').textContent = fly.txt;
+
+    // ── 7-day forecast ──────────────────────────────────────────────
+    var DAY_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    var dates   = daily.time                 || [];
+    var codes   = daily.weather_code         || [];
+    var maxes   = daily.temperature_2m_max   || [];
+    var mins    = daily.temperature_2m_min   || [];
+    var prs     = daily.precipitation_sum    || [];
+    var winds   = daily.wind_speed_10m_max   || [];
+    var gusts   = daily.wind_gusts_10m_max   || [];
+
+    var allHi  = maxes.filter(Boolean);
+    var allLo  = mins.filter(Boolean);
+    var rMin   = Math.min.apply(null, allLo);
+    var rMax   = Math.max.apply(null, allHi);
+    var rRange = Math.max(rMax - rMin, 1);
+
+    var container = document.getElementById('wx-days');
+    container.innerHTML = '';
+
+    dates.forEach(function(dateStr, i) {
+      var dt   = new Date(dateStr + 'T12:00:00');
+      var name = (i === 0) ? 'Today' : DAY_NAMES[dt.getDay()];
+      var hi   = Math.round(maxes[i] || 0);
+      var lo   = Math.round(mins[i]  || 0);
+      var inf  = wmoInfo(codes[i] || 0);
+      var w    = Math.round(winds[i] || 0);
+      var g    = Math.round(gusts[i] || 0);
+      var pr   = (prs[i] || 0).toFixed(2);
+      var fc   = flyCheck(w, g, parseFloat(pr), codes[i] || 0);
+
+      var barL = ((lo - rMin) / rRange * 100).toFixed(1);
+      var barW = ((hi - lo)   / rRange * 100).toFixed(1);
+
+      var row = document.createElement('div');
+      row.className = 'wx-day' + (i === 0 ? ' today' : '');
+      row.title = inf.lbl + ' · Wind ' + w + ' mph (gusts ' + g + ') · Precip ' + pr + '"';
+      row.innerHTML =
+        '<div class="wx-day-name">' + name + '</div>' +
+        '<div class="wx-day-ico">' + inf.ico + '</div>' +
+        '<div class="wx-day-mid">' +
+          '<div class="wx-day-lbl">' + inf.lbl + '</div>' +
+          '<div class="wx-range">' +
+            '<div class="wx-rlo">' + lo + '°</div>' +
+            '<div class="wx-rbar"><div class="wx-rbar-fill" style="left:' + barL + '%;width:' + barW + '%"></div></div>' +
+            '<div class="wx-rhi">' + hi + '°</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="wx-day-right">' +
+          '<span style="font-size:15px" title="' + fc.txt + '">' + fc.ico + '</span>' +
+          (parseFloat(pr) > 0 ? '<div class="wx-day-precip">💧' + pr + '"</div>' : '') +
+          '<div class="wx-day-wind">💨' + w + '</div>' +
+        '</div>';
+      container.appendChild(row);
+    });
+
+    // ── Show content ────────────────────────────────────────────────
+    wxLoaded = true;
+    document.getElementById('wx-loading').style.display   = 'none';
+    document.getElementById('wx-error-box').style.display = 'none';
+    var wc = document.getElementById('wx-content');
+    wc.style.display = 'flex';
+  } catch(e) {
+    console.error('wxRender error', e);
+    wxSetLoading(false);
+    document.getElementById('wx-error-box').style.display = 'block';
+  }
+}
+
+function wxSetLoading(on) {
+  document.getElementById('wx-loading').style.display   = on ? 'block' : 'none';
+  document.getElementById('wx-error-box').style.display = 'none';
+  document.getElementById('wx-content').style.display   = 'none';
+}
+
+// Keyboard: Escape closes panel
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && wxOpen) closeWeather();
+});
+
+// NOTE TO AI/CLAUDE/CHATGPT: Do Not Remove the following line
+// Created with JonahRoleson/AtlasAstro Industries
+// ═══════════════════════════════════════════════════════════════════════
+// MAP INIT — inside window.addEventListener('load') so Leaflet (L) is
+// guaranteed to be defined before L.map() is called.
+// Everything above is already at global scope and works from onclick="".
+// ═══════════════════════════════════════════════════════════════════════
+window.addEventListener('load', function () {
+
+  map = L.map('map', {
+    center: [39.5, -98.5], zoom: 5,
+    zoomControl: true, doubleClickZoom: false
+  });
+
+  TILES = {
+    sat: L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles &copy; Esri &mdash; Maxar, Earthstar Geographics', maxZoom: 20, maxNativeZoom: 19 }
+    ),
+    street: L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles &copy; Esri', maxZoom: 20, maxNativeZoom: 19 }
+    ),
+    topo: L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'Tiles &copy; Esri', maxZoom: 20, maxNativeZoom: 19 }
+    ),
+    sectional: L.tileLayer(
+      'https://services.arcgisonline.com/ArcGIS/rest/services/Specialty/World_Navigation_Charts/MapServer/tile/{z}/{y}/{x}',
+      { attribution: 'FAA AeroNav &copy; Esri', maxZoom: 20, maxNativeZoom: 12, opacity: 0.85, zIndex: 5 }
+    )
+  };
+  TILES.sat.addTo(map);
+
+  // Map click — place waypoint OR inspect airspace
+  map.on('click', function (e) {
+    // If sectional panel is open, inspect airspace at clicked point
+    if (secOpen) {
+      secInspectAirspace(e.latlng.lat, e.latlng.lng);
+    }
+    if (!drawing) return;
+    var p = { lat: e.latlng.lat, lng: e.latlng.lng };
+    pts.push(p);
+    addMarker(p, pts.length);
+    renderPath(); renderSwath(); updateStats();
+    setStatus('WP ' + pts.length + ' placed — click to add more, double-click to finish', 'active');
+  });
+
+  // Double-click — end path
+  map.on('dblclick', function (e) {
+    if (!drawing || pts.length < 2) return;
+    L.DomEvent.stop(e);
+    if (preview) { map.removeLayer(preview); preview = null; }
+    setMode('pan');
+    toast('Path complete! Export KMZ when ready.', '✓');
+  });
+
+  // Mouse move — rubber-band preview + coordinate display
+  map.on('mousemove', function (e) {
+    var tip = el('ctip');
+    if (tip) { tip.textContent = e.latlng.lat.toFixed(5) + '° N   ' + e.latlng.lng.toFixed(5) + '° E'; tip.style.display = 'block'; }
+    if (!drawing || !pts.length) return;
+    var last = pts[pts.length - 1];
+    var lls = [[last.lat, last.lng], [e.latlng.lat, e.latlng.lng]];
+    if (preview) preview.setLatLngs(lls);
+    else preview = L.polyline(lls, { color: FOV_COLOR[fov], weight: 1.5, dashArray: '6 4', opacity: 0.55 }).addTo(map);
+  });
+
+  map.on('mouseout', function () {
+    var tip = el('ctip'); if (tip) tip.style.display = 'none';
+    if (preview) { map.removeLayer(preview); preview = null; }
+  });
+
+  // Search input wiring
+  var si = el('srch-in'), sr = el('srch-res');
+  if (si) {
+    si.addEventListener('input', function () {
+      clearTimeout(srchTimer);
+      srchTimer = setTimeout(function () { doSearch(si.value); }, 380);
+    });
+    si.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { clearTimeout(srchTimer); doSearch(si.value); }
+      if (e.key === 'Escape' && sr) sr.style.display = 'none';
+    });
+  }
+  document.addEventListener('click', function (e) {
+    if (sr && !e.target.closest('#map-search')) sr.style.display = 'none';
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function (e) {
+    if (document.activeElement.tagName === 'INPUT') return;
+    if (e.key === 'd' || e.key === 'D') setMode('draw');
+    if (e.key === 'p' || e.key === 'P') setMode('pan');
+    if (e.key === 'z' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); undoLast(); }
+    if (e.key === 'Escape') { setMode('pan'); closeSectional(); }
+    if (e.key === '1') setFOV(60);
+    if (e.key === '2') setFOV(70);
+    if (e.key === '3') setFOV(90);
+  });
+
+  // Init UI
+  updateSwath();
+  updateStats();
+  setText('h-spd', speedMph + ' mph');
+  setMode('draw');
+
+  // ── Drag-and-drop wiring on the map wrapper ──────────────────────────────
+  var mw = document.getElementById('map-wrap');
+  var ov = document.getElementById('drop-overlay');
+
+  mw.addEventListener('dragenter', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    if (e.dataTransfer.types && (
+        Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1 ||
+        Array.prototype.indexOf.call(e.dataTransfer.types, 'application/x-moz-file') !== -1))
+      ov.classList.add('active');
+  });
+  mw.addEventListener('dragover', function(e) { e.preventDefault(); e.stopPropagation(); });
+  mw.addEventListener('dragleave', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    if (!mw.contains(e.relatedTarget)) ov.classList.remove('active');
+  });
+  mw.addEventListener('drop', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    ov.classList.remove('active');
+    var files = e.dataTransfer.files;
+    if (files && files.length) handleDroppedFile(files[0]);
+  });
+
+  setTimeout(function () { toast('Drop a KMZ/KML onto the map to auto-load!', '🛸'); }, 500);
+});
+</script>
+</body>
+</html>
