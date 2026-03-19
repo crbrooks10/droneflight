@@ -72,7 +72,7 @@ Download index.html → open in any modern browser
 1. Fork or clone this repo
 2. Go to **Settings → Pages**
 3. Set source to `main` branch, `/ (root)`
-4. Your planner will be live at `https://yourusername.github.io/skyphor/`
+4. Your planner will be live at `https://crbrooks10.github.io/skyphor/`
 
 ### Option 3 — Any static host
 Upload `index.html` to Netlify, Vercel, Cloudflare Pages, or any static host. No build step needed.
